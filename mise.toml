@@ -1,2 +1,26 @@
 [tools]
 dotnet = "10.0.100"
+
+[tasks.build]
+description = "Build solution"
+run = "dotnet build AuthService.sln --warnaserror"
+
+[tasks.test]
+description = "Run tests"
+run = "dotnet test AuthService.sln"
+
+[tasks.format]
+description = "Check formatting"
+run = "dotnet format --verify-no-changes AuthService.sln"
+
+[tasks.ef-check]
+description = "Check EF migrations"
+run = "dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure --startup-project src/Auth.Api"
+
+[tasks.run]
+description = "Run API"
+run = "dotnet run --project src/Auth.Api"
+
+[tasks.pack-shared]
+description = "Pack SharedKernel and copy to local-feed"
+run = "dotnet pack ../job-platform-shared/src/SharedKernel/SharedKernel.csproj -c Release -o ../job-platform-shared/artifacts && cp ../job-platform-shared/artifacts/*.nupkg local-feed/"
