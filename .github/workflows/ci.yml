@@ -5,4 +5,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: echo "ci placeholder"
+        with: { path: job-platform-auth-svc }
+      - uses: actions/checkout@v4
+        with: { repository: dut-pbl6-2026/job-platform-shared, path: job-platform-shared }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet tool install --global dotnet-ef --version 8.0.11
+      - working-directory: job-platform-auth-svc
+        run: dotnet build AuthService.sln
+      - working-directory: job-platform-auth-svc
+        run: dotnet test AuthService.sln --no-build
+      - working-directory: job-platform-auth-svc
+        run: dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure/Auth.Infrastructure.csproj --startup-project src/Auth.Api/Auth.Api.csproj || echo "check migrations"
