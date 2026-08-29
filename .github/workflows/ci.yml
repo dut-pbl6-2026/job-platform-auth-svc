@@ -8,9 +8,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '10.0.100' }
       - run: dotnet tool install --global dotnet-ef --version 10.0.0
-      - run: dotnet nuget list source
-      - run: dotnet restore AuthService.sln --verbosity normal
-      - run: dotnet format --verify-no-changes AuthService.sln --verbosity diagnostic
+      - run: dotnet format --verify-no-changes AuthService.sln
       - run: dotnet build AuthService.sln --warnaserror
       - run: dotnet test AuthService.sln --no-build
       - run: dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure/Auth.Infrastructure.csproj --startup-project src/Auth.Api/Auth.Api.csproj || echo "check migrations"
