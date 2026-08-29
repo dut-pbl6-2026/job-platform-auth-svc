@@ -11,14 +11,14 @@ public class User : Entity
     public bool IsActive { get; private set; } = true;
     public DateTime? LastLoginAt { get; private set; }
 
-    private User() {}
-    public User(string email, string passwordHash, string fullName, string role="User")
+    private User() { }
+    public User(string email, string passwordHash, string fullName, string role = "User")
     {
-        Email=email.ToLowerInvariant();
-        PasswordHash=passwordHash;
-        FullName=fullName;
-        Role=role;
+        Email = email.ToLowerInvariant();
+        PasswordHash = passwordHash;
+        FullName = fullName;
+        Role = role;
     }
-    public void UpdatePassword(string hash){ PasswordHash=hash; Touch(); }
-    public void RecordLogin(){ LastLoginAt=DateTime.UtcNow; Touch(); }
+    public void UpdatePassword(string hash) { PasswordHash = hash; Touch(); }
+    public void RecordLogin() { LastLoginAt = DateTime.UtcNow; Touch(); }
 }

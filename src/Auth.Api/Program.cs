@@ -40,7 +40,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// Swagger + health
+// ProblemDetails + Swagger + health
+builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -58,6 +59,8 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
+app.UseExceptionHandler();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -70,12 +73,21 @@ app.UseAuthorization();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
 
-// Auto-migrate on startup (dev)
+// Auto-migrate on startup
 using (var scope = app.Services.CreateScope())
 {
+    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
     var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
-    // Only migrate if DB reachable; swallow in CI without DB
-    try { db.Database.Migrate(); } catch { /* log */ }
+    try
+    {
+        db.Database.Migrate();
+        logger.LogInformation("DB migrated successfully");
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "DB migrate failed");
+        if (app.Environment.IsDevelopment()) throw;
+    }
 }
 
 app.Run();

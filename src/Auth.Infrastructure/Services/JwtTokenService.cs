@@ -11,7 +11,7 @@ namespace Auth.Infrastructure.Services;
 public class JwtTokenService
 {
     private readonly JwtOptions _opt;
-    public JwtTokenService(IOptions<JwtOptions> opt) => _opt=opt.Value;
+    public JwtTokenService(IOptions<JwtOptions> opt) => _opt = opt.Value;
 
     public string GenerateAccessToken(Guid userId, string email, string role)
     {
