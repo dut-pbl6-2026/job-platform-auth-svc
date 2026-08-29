@@ -1,4 +1,5 @@
 using System.Text;
+using Auth.Api.Endpoints;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -21,8 +22,9 @@ var conn = builder.Configuration.GetConnectionString("AuthDb")
            ?? "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=postgres";
 builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
 
-// JWT
+// Services
 builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddSingleton<PasswordHasherService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
     {
@@ -39,6 +41,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 builder.Services.AddAuthorization();
+
+// CORS for React dev
+builder.Services.AddCors(o => o.AddPolicy("web", p => p.WithOrigins("http://localhost:5173", "http://localhost:3000").AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 // ProblemDetails + Swagger + health
 builder.Services.AddProblemDetails();
@@ -67,11 +72,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors("web");
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
+app.MapAuthEndpoints();
 
 // Auto-migrate on startup
 using (var scope = app.Services.CreateScope())
