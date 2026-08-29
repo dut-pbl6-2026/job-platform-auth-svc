@@ -5,17 +5,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { path: job-platform-auth-svc }
-      - uses: actions/checkout@v4
-        with: { repository: dut-pbl6-2026/job-platform-shared, path: job-platform-shared }
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '10.0.100' }
       - run: dotnet tool install --global dotnet-ef --version 10.0.0
-      - working-directory: job-platform-auth-svc
-        run: dotnet format --verify-no-changes
-      - working-directory: job-platform-auth-svc
-        run: dotnet build AuthService.sln --warnaserror
-      - working-directory: job-platform-auth-svc
-        run: dotnet test AuthService.sln --no-build
-      - working-directory: job-platform-auth-svc
-        run: dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure/Auth.Infrastructure.csproj --startup-project src/Auth.Api/Auth.Api.csproj || echo "check migrations"
+      - run: dotnet format --verify-no-changes AuthService.sln
+      - run: dotnet build AuthService.sln --warnaserror
+      - run: dotnet test AuthService.sln --no-build
+      - run: dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure/Auth.Infrastructure.csproj --startup-project src/Auth.Api/Auth.Api.csproj || echo "check migrations"
