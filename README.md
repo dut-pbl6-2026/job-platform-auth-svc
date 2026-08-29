@@ -75,23 +75,13 @@ cd ../job-platform-auth-svc
 ## Build
 
 ```bash
-dotnet restore AuthService.sln
-dotnet build AuthService.sln --warnaserror
-dotnet format --verify-no-changes AuthService.sln
-dotnet test AuthService.sln
+mise run build   # dotnet build --warnaserror
+mise run test    # dotnet test
+mise run format  # dotnet format --verify-no-changes
+mise run ef-check
 ```
 
-Short aliases: `mise run build` `mise run test` `mise run format` `make build` `make test`.
-
-EF check (long):
-
-```bash
-dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure --startup-project src/Auth.Api
-```
-
-Short: `mise run ef-check` or `make ef-check`.
-
-To update SharedKernel: `mise run pack-shared` or `make pack-shared` (packs `../job-platform-shared` to `local-feed`).
+To update SharedKernel: `mise run pack-shared`.
 
 ## Run
 
