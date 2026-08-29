@@ -28,8 +28,16 @@ cd ../job-platform-auth-svc && dotnet run --project src/Auth.Api  # http://local
 
 ## Prerequisites
 
-- `mise` https://mise.jdx.dev + `eval "$(mise activate bash)"`
-- `dotnet 10.0.100` via `mise`
+- `mise` https://mise.jdx.dev — install `curl https://mise.run | sh` / `brew install mise` / `winget install jdx.mise` (see https://mise.jdx.dev/getting-started.html)
+- `dotnet 10.0.100` via `mise` — `mise trust && mise install && mise exec -- dotnet --version # 10.0.100`
+- Activate (optional, for bare `dotnet` without `mise exec`):
+
+  | Shell | Add to config file | Activate |
+  |-------|--------------------|----------|
+  | `bash` | `~/.bashrc` or `~/.bash_profile` | `eval "$(mise activate bash)"` |
+  | `zsh` | `~/.zshrc` | `eval "$(mise activate zsh)"` |
+  | `fish` | `~/.config/fish/config.fish` | `mise activate fish \| source` |
+  | `PowerShell` | `$PROFILE` | `mise activate pwsh \| Out-String \| Invoke-Expression` |
 - `docker` + `docker compose v2`
 - `git` `gh`
 
