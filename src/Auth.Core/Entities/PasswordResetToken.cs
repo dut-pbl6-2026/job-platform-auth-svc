@@ -9,13 +9,13 @@ public class PasswordResetToken : Entity
     public DateTime ExpiresAt { get; private set; }
     public bool IsUsed { get; private set; }
 
-    private PasswordResetToken(){}
+    private PasswordResetToken() { }
     public PasswordResetToken(Guid userId, string tokenHash, DateTime expiresAt)
     {
-        UserId=userId;
-        TokenHash=tokenHash;
-        ExpiresAt=expiresAt;
+        UserId = userId;
+        TokenHash = tokenHash;
+        ExpiresAt = expiresAt;
     }
     public bool IsExpired => DateTime.UtcNow >= ExpiresAt;
-    public void MarkUsed(){ IsUsed=true; Touch(); }
+    public void MarkUsed() { IsUsed = true; Touch(); }
 }

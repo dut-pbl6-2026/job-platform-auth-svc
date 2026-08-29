@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../../job-platform-shared/src/SharedKernel/SharedKernel.csproj" />
+    <PackageReference Include="JobPlatform.SharedKernel" Version="0.1.0" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
