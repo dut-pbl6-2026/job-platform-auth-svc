@@ -1,5 +1,6 @@
 [tools]
 dotnet = "10.0.100"
+"dotnet:dotnet-ef" = "10.0.4"
 
 [tasks.build]
 description = "Build solution"
