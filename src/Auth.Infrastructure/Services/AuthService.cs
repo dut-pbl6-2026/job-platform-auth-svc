@@ -3,6 +3,7 @@ using Auth.Core.Entities;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SharedKernel;
 
@@ -14,13 +15,19 @@ public class AuthService : IAuthService
     private readonly PasswordHasherService _hasher;
     private readonly JwtTokenService _jwt;
     private readonly ILogger<AuthService> _logger;
+    private readonly IEmailSender _emailSender;
+    private readonly ICompanyValidationClient? _companyClient;
+    private readonly IConfiguration _config;
 
-    public AuthService(AuthDbContext db, PasswordHasherService hasher, JwtTokenService jwt, ILogger<AuthService> logger)
+    public AuthService(AuthDbContext db, PasswordHasherService hasher, JwtTokenService jwt, ILogger<AuthService> logger, IEmailSender emailSender, IConfiguration config, ICompanyValidationClient? companyClient = null)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
         _logger = logger;
+        _emailSender = emailSender;
+        _config = config;
+        _companyClient = companyClient;
     }
 
     public async Task<Result<Guid>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
@@ -34,16 +41,24 @@ public class AuthService : IAuthService
         if (!IsPasswordStrong(request.Password))
             return Result<Guid>.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
 
-        var exists = await _db.Users.AnyAsync(u => u.Email == email, ct);
-        if (exists)
+        // deprecated companyName guard — SRS 3-must-have-fr.md:69
+        // If request is extended with companyName via query/body, reject is handled at endpoint layer; here enforce CompanyId FK for Recruiter
+        if (role == "Recruiter" && request.CompanyId.HasValue && _companyClient != null)
         {
-            _logger.LogWarning("Register failed duplicate email {Email}", email);
+            var exists = await _companyClient.ExistsAsync(request.CompanyId.Value, ct);
+            if (!exists)
+                return Result<Guid>.Failure("Invalid companyId");
+        }
+
+        var existsEmail = await _db.Users.AnyAsync(u => u.Email == email, ct);
+        if (existsEmail)
+        {
+            _logger.LogWarning("AUDIT AuthEvent=RegisterFailed Email={Email} Reason=Duplicate", email);
             return Result<Guid>.Failure("Email exists");
         }
 
         var hash = _hasher.Hash(request.Password);
         var user = new User(email, hash, request.FullName.Trim(), role);
-        // TODO PBL6-44: if Recruiter validate CompanyId FK via companies table/profile service
         _db.Users.Add(user);
         try
         {
@@ -51,11 +66,11 @@ public class AuthService : IAuthService
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
-            _logger.LogWarning(ex, "Register failed duplicate email {Email}", email);
+            _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterFailed Email={Email} Reason=Duplicate", email);
             return Result<Guid>.Failure("Email exists");
         }
 
-        _logger.LogInformation("User registered {UserId} {Email}", user.Id, email);
+        _logger.LogInformation("AUDIT AuthEvent=RegisterSuccess UserId={UserId} Email={Email} Role={Role}", user.Id, email, role);
         return Result<Guid>.Success(user.Id);
     }
 
@@ -65,13 +80,13 @@ public class AuthService : IAuthService
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
         if (user == null || !_hasher.Verify(request.Password, user.PasswordHash))
         {
-            _logger.LogWarning("Login failed invalid credentials {Email}", email);
+            _logger.LogWarning("AUDIT AuthEvent=LoginFailed Email={Email} Reason=InvalidCredentials", email);
             return Result<AuthResponse>.Failure("Invalid credentials");
         }
 
         if (!user.IsActive)
         {
-            _logger.LogWarning("Login failed inactive account {UserId}", user.Id);
+            _logger.LogWarning("AUDIT AuthEvent=LoginFailed UserId={UserId} Reason=Inactive", user.Id);
             return Result<AuthResponse>.Failure("Account inactive");
         }
 
@@ -80,12 +95,12 @@ public class AuthService : IAuthService
         var tokenHash = _jwt.HashToken(refreshToken);
         var expiresAt = DateTime.UtcNow.AddDays(request.RememberMe ? 30 : 7);
 
-        var rt = new RefreshToken(user.Id, tokenHash, expiresAt);
+        var rt = new RefreshToken(user.Id, tokenHash, expiresAt, null, request.RememberMe);
         _db.RefreshTokens.Add(rt);
         user.RecordLogin();
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogInformation("User login success {UserId}", user.Id);
+        _logger.LogInformation("AUDIT AuthEvent=LoginSuccess UserId={UserId} RememberMe={RememberMe}", user.Id, request.RememberMe);
         var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role);
         return Result<AuthResponse>.Success(new AuthResponse(accessToken, refreshToken, dto));
     }
@@ -99,14 +114,13 @@ public class AuthService : IAuthService
         var stored = await _db.RefreshTokens.FirstOrDefaultAsync(x => x.TokenHash == hash, ct);
         if (stored == null)
         {
-            _logger.LogWarning("Refresh failed not found");
+            _logger.LogWarning("AUDIT AuthEvent=RefreshFailed Reason=NotFound");
             return Result<AuthResponse>.Failure("Invalid refresh token");
         }
 
         if (stored.IsRevoked)
         {
-            // Reuse detection — scoped family revocation (SEC-09 anti-DoS)
-            _logger.LogWarning("Refresh reuse detected Family {Family} User {UserId}", stored.TokenFamily, stored.UserId);
+            _logger.LogWarning("AUDIT AuthEvent=RefreshReuseDetected Family={Family} UserId={UserId}", stored.TokenFamily, stored.UserId);
             var familyTokens = await _db.RefreshTokens
                 .Where(x => x.UserId == stored.UserId && x.TokenFamily == stored.TokenFamily && !x.IsRevoked)
                 .ToListAsync(ct);
@@ -117,7 +131,7 @@ public class AuthService : IAuthService
 
         if (stored.IsExpired)
         {
-            _logger.LogWarning("Refresh failed expired {UserId}", stored.UserId);
+            _logger.LogWarning("AUDIT AuthEvent=RefreshFailed UserId={UserId} Reason=Expired", stored.UserId);
             return Result<AuthResponse>.Failure("Refresh token expired");
         }
 
@@ -125,21 +139,17 @@ public class AuthService : IAuthService
         if (user == null || !user.IsActive)
             return Result<AuthResponse>.Failure("User not found");
 
-        // Normal rotation: revoke old, issue new child same family
         stored.Revoke();
         var newRefresh = _jwt.GenerateRefreshToken();
         var newHash = _jwt.HashToken(newRefresh);
-        var expiresAt = DateTime.UtcNow.AddDays(7);
-        // Keep original 30d if original was long-lived (heuristic: >14d remaining)
-        var remaining = stored.ExpiresAt - DateTime.UtcNow;
-        if (remaining.TotalDays > 14) expiresAt = DateTime.UtcNow.AddDays(30);
+        var expiresAt = DateTime.UtcNow.AddDays(stored.IsLongLived ? 30 : 7);
 
-        var newRt = new RefreshToken(user.Id, newHash, expiresAt, stored.TokenFamily);
+        var newRt = new RefreshToken(user.Id, newHash, expiresAt, stored.TokenFamily, stored.IsLongLived);
         _db.RefreshTokens.Add(newRt);
         await _db.SaveChangesAsync(ct);
 
         var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role);
-        _logger.LogInformation("Refresh rotated Family {Family} User {UserId}", stored.TokenFamily, user.Id);
+        _logger.LogInformation("AUDIT AuthEvent=RefreshSuccess Family={Family} UserId={UserId}", stored.TokenFamily, user.Id);
         var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role);
         return Result<AuthResponse>.Success(new AuthResponse(newAccess, newRefresh, dto));
     }
@@ -154,16 +164,15 @@ public class AuthService : IAuthService
             {
                 stored.Revoke();
                 await _db.SaveChangesAsync(ct);
-                _logger.LogInformation("Logout single token User {UserId}", userId);
+                _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=Single", userId);
             }
         }
         else
         {
-            // Revoke all active tokens for user (all devices) — explicit logout all
             var actives = await _db.RefreshTokens.Where(x => x.UserId == userId && !x.IsRevoked && x.ExpiresAt > DateTime.UtcNow).ToListAsync(ct);
             foreach (var t in actives) t.Revoke();
             if (actives.Count > 0) await _db.SaveChangesAsync(ct);
-            _logger.LogInformation("Logout all tokens User {UserId} Count {Count}", userId, actives.Count);
+            _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=All Count={Count}", userId, actives.Count);
         }
         return Result.Success();
     }
@@ -173,6 +182,57 @@ public class AuthService : IAuthService
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
         if (user == null) return Result<UserMeDto>.Failure("User not found");
         return Result<UserMeDto>.Success(new UserMeDto(user.Id, user.Email, user.FullName, user.Role, user.IsActive));
+    }
+
+    public async Task<Result> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken ct = default)
+    {
+        var email = request.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (user == null)
+        {
+            _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=false", email);
+            return Result.Success();
+        }
+
+        var plainToken = _jwt.GenerateRefreshToken();
+        var hash = _jwt.HashToken(plainToken);
+        var expiresAt = DateTime.UtcNow.AddMinutes(15);
+        var prt = new PasswordResetToken(user.Id, hash, expiresAt);
+        _db.PasswordResetTokens.Add(prt);
+        await _db.SaveChangesAsync(ct);
+
+        var webUrl = _config["WEB_URL"] ?? _config["WebUrl"] ?? "http://localhost:5173";
+        var link = $"{webUrl.TrimEnd('/')}/reset-password?token={Uri.EscapeDataString(plainToken)}";
+        await _emailSender.SendPasswordResetAsync(email, link, ct);
+        _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=true TokenHash={Hash}", email, hash[..8]);
+        return Result.Success();
+    }
+
+    public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken ct = default)
+    {
+        if (!IsPasswordStrong(request.NewPassword))
+            return Result.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
+
+        var hash = _jwt.HashToken(request.Token);
+        var stored = await _db.PasswordResetTokens.FirstOrDefaultAsync(x => x.TokenHash == hash, ct);
+        if (stored == null || stored.IsUsed || stored.IsExpired)
+        {
+            _logger.LogWarning("AUDIT AuthEvent=ResetPasswordFailed Reason=InvalidOrExpired");
+            return Result.Failure("Invalid or expired token");
+        }
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == stored.UserId, ct);
+        if (user == null) return Result.Failure("User not found");
+
+        user.UpdatePassword(_hasher.Hash(request.NewPassword));
+        stored.MarkUsed();
+
+        var actives = await _db.RefreshTokens.Where(x => x.UserId == user.Id && !x.IsRevoked).ToListAsync(ct);
+        foreach (var t in actives) t.Revoke();
+
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation("AUDIT AuthEvent=ResetPasswordSuccess UserId={UserId} RevokedCount={Count}", user.Id, actives.Count);
+        return Result.Success();
     }
 
     private static bool IsPasswordStrong(string pwd)

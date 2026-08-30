@@ -24,8 +24,14 @@ public static class AuthEndpoints
             IAuthService svc,
             CancellationToken ct) =>
         {
+            if (!string.IsNullOrWhiteSpace(req.CompanyName))
+                return Results.Problem(statusCode: 400, detail: "companyName is deprecated. Please create company first and use companyId.");
+
             var validation = Validate(req);
             if (validation is not null) return validation;
+
+            if (req.CompanyId.HasValue && req.CompanyId.Value == Guid.Empty)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["CompanyId"] = ["Invalid companyId"] });
 
             var result = await svc.RegisterAsync(req, ct);
             if (!result.IsSuccess)
@@ -41,6 +47,8 @@ public static class AuthEndpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["Password"] = [result.Error] });
                 if (result.Error == "Invalid role")
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["Role"] = [result.Error] });
+                if (result.Error == "Invalid companyId")
+                    return Results.Problem(statusCode: 422, detail: result.Error);
                 return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
             }
 
@@ -50,6 +58,7 @@ public static class AuthEndpoints
         })
         .WithName("Register")
         .WithSummary("Register new user")
+        .RequireRateLimiting("global")
         .Produces<RegisterResponse>(201)
         .ProducesValidationProblem()
         .ProducesProblem(409);
@@ -76,6 +85,7 @@ public static class AuthEndpoints
         })
         .WithName("Login")
         .WithSummary("Login and issue JWT")
+        .RequireRateLimiting("global")
         .Produces<AuthResponse>(200)
         .Produces(401)
         .ProducesProblem(403);
@@ -104,6 +114,7 @@ public static class AuthEndpoints
         })
         .WithName("Refresh")
         .WithSummary("Rotate refresh token (family-scoped reuse detection)")
+        .RequireRateLimiting("global")
         .Produces<AuthResponse>(200)
         .Produces(401);
 
@@ -151,6 +162,50 @@ public static class AuthEndpoints
         .Produces(401)
         .ProducesProblem(404);
 
+        group.MapPost("/forgot-password", async (
+            ForgotPasswordRequest req,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            var validation = Validate(req);
+            if (validation is not null) return validation;
+
+            await svc.ForgotPasswordAsync(req, ct);
+            // Always 200 anti-enumeration per SRS AUTH-01-07
+            return Results.Ok(new { message = "If email exists, reset link sent" });
+        })
+        .WithName("ForgotPassword")
+        .WithSummary("Request password reset (anti-enumeration, 15m TTL, 5/IP/h)")
+        .RequireRateLimiting("forgot")
+        .Produces(200)
+        .ProducesValidationProblem();
+
+        group.MapPost("/reset-password", async (
+            ResetPasswordRequest req,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            var validation = Validate(req);
+            if (validation is not null) return validation;
+
+            var result = await svc.ResetPasswordAsync(req, ct);
+            if (!result.IsSuccess)
+            {
+                if (result.Error == "Invalid or expired token")
+                    return Results.Problem(statusCode: 401, detail: result.Error);
+                if (result.Error is not null && result.Error.Contains("Password"))
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["NewPassword"] = [result.Error] });
+                return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
+            }
+
+            return Results.Ok(new { message = "Password reset successful. Please login." });
+        })
+        .WithName("ResetPassword")
+        .WithSummary("Reset password (single-use 15m, revokes all refresh tokens)")
+        .Produces(200)
+        .Produces(401)
+        .ProducesValidationProblem();
+
         return app;
     }
 
@@ -186,6 +241,18 @@ public static class AuthEndpoints
         {
             if (string.IsNullOrWhiteSpace(rr2.RefreshToken))
                 results.Add(new ValidationResult("RefreshToken is required", ["RefreshToken"]));
+        }
+        else if (req is ForgotPasswordRequest fr)
+        {
+            if (string.IsNullOrWhiteSpace(fr.Email))
+                results.Add(new ValidationResult("Email is required", ["Email"]));
+        }
+        else if (req is ResetPasswordRequest rp)
+        {
+            if (string.IsNullOrWhiteSpace(rp.Token))
+                results.Add(new ValidationResult("Token is required", ["Token"]));
+            if (string.IsNullOrWhiteSpace(rp.NewPassword))
+                results.Add(new ValidationResult("NewPassword is required", ["NewPassword"]));
         }
 
         if (results.Count == 0) return null;

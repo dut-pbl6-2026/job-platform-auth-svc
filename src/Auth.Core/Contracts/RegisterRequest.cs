@@ -7,7 +7,8 @@ public record RegisterRequest(
     [Required, MinLength(8), MaxLength(128)] string Password,
     [Required, MaxLength(128)] string FullName,
     [MaxLength(32)] string? Role = "User",
-    Guid? CompanyId = null
+    Guid? CompanyId = null,
+    string? CompanyName = null
 );
 
 public record RegisterResponse(Guid UserId, string Message);
@@ -22,8 +23,12 @@ public record UserDto(Guid Id, string Email, string FullName, string Role);
 
 public record AuthResponse(string AccessToken, string RefreshToken, UserDto User);
 
-public record RefreshRequest(string RefreshToken);
+public record RefreshRequest([Required] string RefreshToken);
 
 public record LogoutRequest(string? RefreshToken = null);
 
 public record UserMeDto(Guid Id, string Email, string FullName, string Role, bool IsActive);
+
+public record ForgotPasswordRequest([Required, EmailAddress, MaxLength(256)] string Email);
+
+public record ResetPasswordRequest([Required] string Token, [Required, MinLength(8), MaxLength(128)] string NewPassword);
