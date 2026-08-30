@@ -91,7 +91,7 @@ using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
     var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
-    if (db.Database.ProviderName != "Microsoft.EntityFrameworkCore.InMemory")
+    if (!db.Database.IsInMemory())
     {
         try
         {

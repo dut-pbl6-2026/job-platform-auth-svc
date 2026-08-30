@@ -45,7 +45,16 @@ public class AuthService : IAuthService
         var user = new User(email, hash, request.FullName.Trim(), role);
         // TODO PBL6-44: if Recruiter validate CompanyId FK via companies table/profile service
         _db.Users.Add(user);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            _logger.LogWarning(ex, "Register failed duplicate email {Email}", email);
+            return Result<Guid>.Failure("Email exists");
+        }
+
         _logger.LogInformation("User registered {UserId} {Email}", user.Id, email);
         return Result<Guid>.Success(user.Id);
     }
@@ -87,5 +96,15 @@ public class AuthService : IAuthService
         if (!pwd.Any(char.IsUpper)) return false;
         if (!pwd.Any(char.IsDigit)) return false;
         return true;
+    }
+
+    private static bool IsUniqueViolation(DbUpdateException ex)
+    {
+        if (ex.InnerException is Npgsql.PostgresException pgEx && pgEx.SqlState == "23505")
+            return true;
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        return message.Contains("unique", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("duplicate", StringComparison.OrdinalIgnoreCase);
     }
 }
