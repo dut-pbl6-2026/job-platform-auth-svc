@@ -31,6 +31,11 @@ else
     builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
 }
 
+// CORS — trust gateway + Vercel + localhost dev
+var corsOrigins = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://job-platform-web.vercel.app";
+var origins = corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+builder.Services.AddCors(o => o.AddPolicy("Default", p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+
 // Services
 builder.Services.AddSingleton<PasswordHasherService>();
 builder.Services.AddSingleton<JwtTokenService>();
@@ -79,6 +84,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors("Default");
 app.UseAuthentication();
 app.UseAuthorization();
 

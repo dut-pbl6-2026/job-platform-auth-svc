@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
 using Auth.Core.Contracts;
 using Auth.Core.Interfaces;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -79,6 +80,77 @@ public static class AuthEndpoints
         .Produces(401)
         .ProducesProblem(403);
 
+        group.MapPost("/refresh", async (
+            RefreshRequest req,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            var validation = Validate(req);
+            if (validation is not null) return validation;
+
+            var result = await svc.RefreshAsync(req.RefreshToken, ct);
+            if (!result.IsSuccess)
+            {
+                if (result.Error == "Refresh token revoked" || result.Error == "Invalid refresh token")
+                    return Results.Unauthorized();
+                if (result.Error == "Refresh token expired")
+                    return Results.Problem(statusCode: 401, detail: "Refresh token expired");
+                if (result.Error == "User not found")
+                    return Results.Problem(statusCode: 404, detail: "User not found");
+                return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
+            }
+
+            return Results.Ok(result.Value!);
+        })
+        .WithName("Refresh")
+        .WithSummary("Rotate refresh token (family-scoped reuse detection)")
+        .Produces<AuthResponse>(200)
+        .Produces(401);
+
+        group.MapPost("/logout", async (
+            ClaimsPrincipal user,
+            LogoutRequest? req,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            var sub = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub");
+            if (sub == null || !Guid.TryParse(sub, out var userId))
+                return Results.Unauthorized();
+
+            var result = await svc.LogoutAsync(userId, req?.RefreshToken, ct);
+            if (!result.IsSuccess)
+                return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
+
+            return Results.NoContent();
+        })
+        .RequireAuthorization()
+        .WithName("Logout")
+        .WithSummary("Revoke refresh token(s)")
+        .Produces(204)
+        .Produces(401);
+
+        group.MapGet("/me", async (
+            ClaimsPrincipal user,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            var sub = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub");
+            if (sub == null || !Guid.TryParse(sub, out var userId))
+                return Results.Unauthorized();
+
+            var result = await svc.GetMeAsync(userId, ct);
+            if (!result.IsSuccess)
+                return Results.Problem(statusCode: 404, detail: result.Error);
+
+            return Results.Ok(result.Value!);
+        })
+        .RequireAuthorization()
+        .WithName("Me")
+        .WithSummary("Get current user")
+        .Produces<UserMeDto>(200)
+        .Produces(401)
+        .ProducesProblem(404);
+
         return app;
     }
 
@@ -109,6 +181,11 @@ public static class AuthEndpoints
                 results.Add(new ValidationResult("Email is required", ["Email"]));
             if (string.IsNullOrWhiteSpace(lr.Password))
                 results.Add(new ValidationResult("Password is required", ["Password"]));
+        }
+        else if (req is RefreshRequest rr2)
+        {
+            if (string.IsNullOrWhiteSpace(rr2.RefreshToken))
+                results.Add(new ValidationResult("RefreshToken is required", ["RefreshToken"]));
         }
 
         if (results.Count == 0) return null;

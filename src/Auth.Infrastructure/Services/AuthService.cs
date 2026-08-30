@@ -90,6 +90,91 @@ public class AuthService : IAuthService
         return Result<AuthResponse>.Success(new AuthResponse(accessToken, refreshToken, dto));
     }
 
+    public async Task<Result<AuthResponse>> RefreshAsync(string refreshToken, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            return Result<AuthResponse>.Failure("Refresh token required");
+
+        var hash = _jwt.HashToken(refreshToken);
+        var stored = await _db.RefreshTokens.FirstOrDefaultAsync(x => x.TokenHash == hash, ct);
+        if (stored == null)
+        {
+            _logger.LogWarning("Refresh failed not found");
+            return Result<AuthResponse>.Failure("Invalid refresh token");
+        }
+
+        if (stored.IsRevoked)
+        {
+            // Reuse detection — scoped family revocation (SEC-09 anti-DoS)
+            _logger.LogWarning("Refresh reuse detected Family {Family} User {UserId}", stored.TokenFamily, stored.UserId);
+            var familyTokens = await _db.RefreshTokens
+                .Where(x => x.UserId == stored.UserId && x.TokenFamily == stored.TokenFamily && !x.IsRevoked)
+                .ToListAsync(ct);
+            foreach (var t in familyTokens) t.Revoke();
+            await _db.SaveChangesAsync(ct);
+            return Result<AuthResponse>.Failure("Refresh token revoked");
+        }
+
+        if (stored.IsExpired)
+        {
+            _logger.LogWarning("Refresh failed expired {UserId}", stored.UserId);
+            return Result<AuthResponse>.Failure("Refresh token expired");
+        }
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == stored.UserId, ct);
+        if (user == null || !user.IsActive)
+            return Result<AuthResponse>.Failure("User not found");
+
+        // Normal rotation: revoke old, issue new child same family
+        stored.Revoke();
+        var newRefresh = _jwt.GenerateRefreshToken();
+        var newHash = _jwt.HashToken(newRefresh);
+        var expiresAt = DateTime.UtcNow.AddDays(7);
+        // Keep original 30d if original was long-lived (heuristic: >14d remaining)
+        var remaining = stored.ExpiresAt - DateTime.UtcNow;
+        if (remaining.TotalDays > 14) expiresAt = DateTime.UtcNow.AddDays(30);
+
+        var newRt = new RefreshToken(user.Id, newHash, expiresAt, stored.TokenFamily);
+        _db.RefreshTokens.Add(newRt);
+        await _db.SaveChangesAsync(ct);
+
+        var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role);
+        _logger.LogInformation("Refresh rotated Family {Family} User {UserId}", stored.TokenFamily, user.Id);
+        var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role);
+        return Result<AuthResponse>.Success(new AuthResponse(newAccess, newRefresh, dto));
+    }
+
+    public async Task<Result> LogoutAsync(Guid userId, string? refreshToken, CancellationToken ct = default)
+    {
+        if (!string.IsNullOrWhiteSpace(refreshToken))
+        {
+            var hash = _jwt.HashToken(refreshToken);
+            var stored = await _db.RefreshTokens.FirstOrDefaultAsync(x => x.TokenHash == hash && x.UserId == userId, ct);
+            if (stored != null && !stored.IsRevoked)
+            {
+                stored.Revoke();
+                await _db.SaveChangesAsync(ct);
+                _logger.LogInformation("Logout single token User {UserId}", userId);
+            }
+        }
+        else
+        {
+            // Revoke all active tokens for user (all devices) — explicit logout all
+            var actives = await _db.RefreshTokens.Where(x => x.UserId == userId && !x.IsRevoked && x.ExpiresAt > DateTime.UtcNow).ToListAsync(ct);
+            foreach (var t in actives) t.Revoke();
+            if (actives.Count > 0) await _db.SaveChangesAsync(ct);
+            _logger.LogInformation("Logout all tokens User {UserId} Count {Count}", userId, actives.Count);
+        }
+        return Result.Success();
+    }
+
+    public async Task<Result<UserMeDto>> GetMeAsync(Guid userId, CancellationToken ct = default)
+    {
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
+        if (user == null) return Result<UserMeDto>.Failure("User not found");
+        return Result<UserMeDto>.Success(new UserMeDto(user.Id, user.Email, user.FullName, user.Role, user.IsActive));
+    }
+
     private static bool IsPasswordStrong(string pwd)
     {
         if (pwd.Length < 8) return false;

@@ -21,3 +21,9 @@ public record LoginRequest(
 public record UserDto(Guid Id, string Email, string FullName, string Role);
 
 public record AuthResponse(string AccessToken, string RefreshToken, UserDto User);
+
+public record RefreshRequest(string RefreshToken);
+
+public record LogoutRequest(string? RefreshToken = null);
+
+public record UserMeDto(Guid Id, string Email, string FullName, string Role, bool IsActive);

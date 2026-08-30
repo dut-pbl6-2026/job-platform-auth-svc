@@ -29,7 +29,10 @@ public class AuthDbContext : DbContext
             e.HasIndex(x => x.TokenHash);
             e.HasIndex(x => x.UserId);
             e.HasIndex(x => x.ExpiresAt);
+            e.HasIndex(x => x.TokenFamily);
+            e.HasIndex(x => new { x.UserId, x.TokenFamily });
             e.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
+            e.Property(x => x.TokenFamily).IsRequired();
         });
         b.Entity<PasswordResetToken>(e =>
         {
