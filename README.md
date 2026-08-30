@@ -54,6 +54,8 @@ Update SharedKernel: `mise run pack-shared`.
 ```bash
 mise run run              # dotnet run --project src/Auth.Api
 curl http://localhost:5001/health   # {"status":"ok"}
+curl -i -X POST http://localhost:5001/api/auth/register -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123","fullName":"Hoai"}' # 201 Created Location: /api/users/{id}
+curl -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123"}' # 200 {accessToken,refreshToken,user}
 ```
 
 `auto-migrate` on startup, `UseExceptionHandler` + `ILogger`.
