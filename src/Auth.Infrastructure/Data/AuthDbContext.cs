@@ -15,6 +15,8 @@ public class AuthDbContext : DbContext
         b.Entity<User>(e =>
         {
             e.HasKey(x => x.Id);
+            // Email is always persisted normalized (Trim + ToLowerInvariant) via User ctor / AuthService;
+            // unique index therefore enforces case-insensitive uniqueness without extra NormalizedEmail column.
             e.HasIndex(x => x.Email).IsUnique();
             e.Property(x => x.Email).HasMaxLength(256).IsRequired();
             e.Property(x => x.PasswordHash).IsRequired();

@@ -1,4 +1,6 @@
 using System.Text;
+using Auth.Api.Endpoints;
+using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -14,15 +16,25 @@ var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOption
 if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     jwt.Secret = "dev-jwt-secret-change-me-32chars-min";
 
-// EF
+// EF — Use InMemory for Testing env to avoid Npgsql/InMemory dual provider conflict
 var conn = builder.Configuration.GetConnectionString("AuthDb")
            ?? builder.Configuration["DATABASE_URL_AUTH"]
            ?? builder.Configuration["ConnectionStrings:AuthDb"]
            ?? "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=postgres";
-builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
+if (builder.Environment.IsEnvironment("Testing"))
+{
+    var dbName = $"auth-test-{Guid.NewGuid()}";
+    builder.Services.AddDbContext<AuthDbContext>(o => o.UseInMemoryDatabase(dbName));
+}
+else
+{
+    builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
+}
 
-// JWT
+// Services
+builder.Services.AddSingleton<PasswordHasherService>();
 builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
     {
@@ -72,22 +84,33 @@ app.UseAuthorization();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
+app.MapAuthEndpoints();
 
-// Auto-migrate on startup
+// Auto-migrate on startup (skip for InMemory Testing)
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
     var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
-    try
+    if (!db.Database.IsInMemory())
     {
-        db.Database.Migrate();
-        logger.LogInformation("DB migrated successfully");
+        try
+        {
+            db.Database.Migrate();
+            logger.LogInformation("DB migrated successfully");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "DB migrate failed");
+            if (app.Environment.IsDevelopment()) throw;
+        }
     }
-    catch (Exception ex)
+    else
     {
-        logger.LogError(ex, "DB migrate failed");
-        if (app.Environment.IsDevelopment()) throw;
+        db.Database.EnsureCreated();
+        logger.LogInformation("InMemory DB ensured created (Testing)");
     }
 }
 
 app.Run();
+
+public partial class Program { }

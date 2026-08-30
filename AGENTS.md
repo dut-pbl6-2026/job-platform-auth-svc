@@ -33,7 +33,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## SRS mapping (AUTH-01)
 
-- `POST /api/auth/register` pwd `8+1upper+1num`, `POST /api/auth/login`, `POST /api/auth/refresh` 7/30d SHA256 rotation reuse→revoke family, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password` 15min TTL 5/IP/h anti-enumeration, `POST /api/auth/reset-password` revokes all tokens, `GET/POST /api/companies` linking `companyId` FK tax_code verified.
+- `POST /api/auth/register` `201 Created` `Location: /api/users/{id}` relative (RFC 9110) `{userId,message}` pwd `8+1upper+1num`, `POST /api/auth/login` `200 {accessToken,refreshToken,user}` `401/403`, `POST /api/auth/refresh` 7/30d SHA256 rotation reuse→revoke family, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password` 15min TTL 5/IP/h anti-enumeration, `POST /api/auth/reset-password` revokes all tokens, `GET/POST /api/companies` linking `companyId` FK tax_code verified.
 - Gateway `GW-01` validates JWT then forwards `X-User-Id/Role`.
 
 ## JWT (SharedKernel JwtOptions)

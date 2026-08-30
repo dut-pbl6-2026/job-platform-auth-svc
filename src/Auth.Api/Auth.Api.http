@@ -1,6 +1,44 @@
-@Auth.Api_HostAddress = http://localhost:5187
+@Auth.Api_HostAddress = http://localhost:5001
 
-GET {{Auth.Api_HostAddress}}/weatherforecast/
+### Health
+GET {{Auth.Api_HostAddress}}/health
 Accept: application/json
 
-###
+### Register — 201 Created Location: /api/users/{id} relative (RFC 9110)
+POST {{Auth.Api_HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "a@b.com",
+  "password": "SecureP@ss123",
+  "fullName": "Hoai Nguyen",
+  "role": "User"
+}
+
+### Register duplicate — 409 Conflict
+POST {{Auth.Api_HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "a@b.com",
+  "password": "SecureP@ss123",
+  "fullName": "Hoai Nguyen"
+}
+
+### Login — 200 {accessToken,refreshToken,user}
+POST {{Auth.Api_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "a@b.com",
+  "password": "SecureP@ss123"
+}
+
+### Login wrong — 401 Unauthorized
+POST {{Auth.Api_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "a@b.com",
+  "password": "wrong"
+}
