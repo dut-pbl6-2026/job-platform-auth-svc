@@ -1,9 +1,12 @@
 using Auth.Core.Contracts;
+using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using SharedKernel;
 
 namespace Auth.Tests;
@@ -26,11 +29,13 @@ public class AuthServiceTests
         return new AuthDbContext(opt);
     }
 
-    private AuthService CreateService(AuthDbContext db)
+    private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null)
     {
         var hasher = new PasswordHasherService();
         var jwt = new JwtTokenService(Options.Create(JwtOptions));
-        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance);
+        var emailMock = new Mock<IEmailSender>();
+        var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" }).Build();
+        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, emailMock.Object, cfg, companyClient);
     }
 
     [Fact]

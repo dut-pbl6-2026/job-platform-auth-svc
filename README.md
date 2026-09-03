@@ -77,3 +77,9 @@ docker run -p 5001:5001 --env-file .env auth
 - `mise run verify` not 14 → re-run `mise run sync-env`
 
 `feature/* → main` (see `job-platform-docs/.github/git-strategy.md`).
+
+## Deploy (Render Free jp-auth — TM1 Hoai)
+- Service: `jp-auth` `https://jp-auth.onrender.com` `5001` `health /health`
+- Env (Render Dashboard): `JWT_SECRET` `DATABASE_URL_AUTH=Supabase pooled` `CORS_ORIGINS=https://jp-web.vercel.app`
+- Hook: `GH Secrets RENDER_DEPLOY_HOOK_AUTH = https://api.render.com/deploy/srv-xxx?key=yyy` → `push main` auto `curl hook` + smoke `curl https://jp-auth.onrender.com/health`
+- Local: `docker compose -f ../job-platform-infra/docker-compose.yml up --build auth`
