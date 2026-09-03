@@ -49,6 +49,8 @@ public static class AuthEndpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["Role"] = [result.Error] });
                 if (result.Error == "Invalid companyId")
                     return Results.Problem(statusCode: 422, detail: result.Error);
+                if (result.Error == "companyId required for Recruiter")
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["CompanyId"] = [result.Error] });
                 return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
             }
 

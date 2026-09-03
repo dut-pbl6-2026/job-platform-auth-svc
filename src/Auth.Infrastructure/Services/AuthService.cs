@@ -41,9 +41,10 @@ public class AuthService : IAuthService
         if (!IsPasswordStrong(request.Password))
             return Result<Guid>.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
 
-        // deprecated companyName guard — SRS 3-must-have-fr.md:69
-        // If request is extended with companyName via query/body, reject is handled at endpoint layer; here enforce CompanyId FK for Recruiter
-        if (role == "Recruiter" && request.CompanyId.HasValue && _companyClient != null)
+        // SRS AUTH-01-06: Recruiter requires companyId (FK → Company)
+        if (role == "Recruiter" && !request.CompanyId.HasValue)
+            return Result<Guid>.Failure("companyId required for Recruiter");
+        if (request.CompanyId.HasValue && _companyClient != null)
         {
             var exists = await _companyClient.ExistsAsync(request.CompanyId.Value, ct);
             if (!exists)
@@ -58,7 +59,8 @@ public class AuthService : IAuthService
         }
 
         var hash = _hasher.Hash(request.Password);
-        var user = new User(email, hash, request.FullName.Trim(), role);
+        var companyId = role == "Recruiter" ? request.CompanyId : null;
+        var user = new User(email, hash, request.FullName.Trim(), role, companyId);
         _db.Users.Add(user);
         try
         {
@@ -70,7 +72,7 @@ public class AuthService : IAuthService
             return Result<Guid>.Failure("Email exists");
         }
 
-        _logger.LogInformation("AUDIT AuthEvent=RegisterSuccess UserId={UserId} Email={Email} Role={Role}", user.Id, email, role);
+        _logger.LogInformation("AUDIT AuthEvent=RegisterSuccess UserId={UserId} Email={Email} Role={Role} CompanyId={CompanyId}", user.Id, email, role, companyId);
         return Result<Guid>.Success(user.Id);
     }
 
@@ -90,7 +92,7 @@ public class AuthService : IAuthService
             return Result<AuthResponse>.Failure("Account inactive");
         }
 
-        var accessToken = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role);
+        var accessToken = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId);
         var refreshToken = _jwt.GenerateRefreshToken();
         var tokenHash = _jwt.HashToken(refreshToken);
         var expiresAt = DateTime.UtcNow.AddDays(request.RememberMe ? 30 : 7);
@@ -100,8 +102,8 @@ public class AuthService : IAuthService
         user.RecordLogin();
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogInformation("AUDIT AuthEvent=LoginSuccess UserId={UserId} RememberMe={RememberMe}", user.Id, request.RememberMe);
-        var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role);
+        _logger.LogInformation("AUDIT AuthEvent=LoginSuccess UserId={UserId} RememberMe={RememberMe} CompanyId={CompanyId}", user.Id, request.RememberMe, user.CompanyId);
+        var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role, user.CompanyId);
         return Result<AuthResponse>.Success(new AuthResponse(accessToken, refreshToken, dto));
     }
 
@@ -148,9 +150,9 @@ public class AuthService : IAuthService
         _db.RefreshTokens.Add(newRt);
         await _db.SaveChangesAsync(ct);
 
-        var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role);
+        var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId);
         _logger.LogInformation("AUDIT AuthEvent=RefreshSuccess Family={Family} UserId={UserId}", stored.TokenFamily, user.Id);
-        var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role);
+        var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role, user.CompanyId);
         return Result<AuthResponse>.Success(new AuthResponse(newAccess, newRefresh, dto));
     }
 
@@ -181,7 +183,7 @@ public class AuthService : IAuthService
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
         if (user == null) return Result<UserMeDto>.Failure("User not found");
-        return Result<UserMeDto>.Success(new UserMeDto(user.Id, user.Email, user.FullName, user.Role, user.IsActive));
+        return Result<UserMeDto>.Success(new UserMeDto(user.Id, user.Email, user.FullName, user.Role, user.CompanyId, user.IsActive));
     }
 
     public async Task<Result> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken ct = default)

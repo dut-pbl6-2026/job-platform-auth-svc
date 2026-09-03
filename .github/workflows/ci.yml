@@ -41,7 +41,7 @@ jobs:
           name: coverage
           path: "**/TestResults/**/coverage.cobertura.xml"
       - name: Check EF migrations
-        run: dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure/Auth.Infrastructure.csproj --startup-project src/Auth.Api/Auth.Api.csproj || echo "check migrations"
+        run: dotnet ef migrations has-pending-model-changes --project src/Auth.Infrastructure/Auth.Infrastructure.csproj --startup-project src/Auth.Api/Auth.Api.csproj
 
   image:
     needs: build

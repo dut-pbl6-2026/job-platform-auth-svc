@@ -19,7 +19,7 @@ public record LoginRequest(
     bool RememberMe = false
 );
 
-public record UserDto(Guid Id, string Email, string FullName, string Role);
+public record UserDto(Guid Id, string Email, string FullName, string Role, Guid? CompanyId);
 
 public record AuthResponse(string AccessToken, string RefreshToken, UserDto User);
 
@@ -27,7 +27,7 @@ public record RefreshRequest([Required] string RefreshToken);
 
 public record LogoutRequest(string? RefreshToken = null);
 
-public record UserMeDto(Guid Id, string Email, string FullName, string Role, bool IsActive);
+public record UserMeDto(Guid Id, string Email, string FullName, string Role, Guid? CompanyId, bool IsActive);
 
 public record ForgotPasswordRequest([Required, EmailAddress, MaxLength(256)] string Email);
 

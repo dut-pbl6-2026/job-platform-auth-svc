@@ -1,10 +1,12 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
 using Auth.Api.Endpoints;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -23,10 +25,17 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
 }
 
 // EF — Use InMemory for Testing env to avoid Npgsql/InMemory dual provider conflict
+// PORT-05: no hardcoded secrets in source — Production requires env, dev falls back to placeholder
 var conn = builder.Configuration.GetConnectionString("AuthDb")
            ?? builder.Configuration["DATABASE_URL_AUTH"]
-           ?? builder.Configuration["ConnectionStrings:AuthDb"]
-           ?? "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=postgres";
+           ?? builder.Configuration["ConnectionStrings:AuthDb"];
+if (string.IsNullOrWhiteSpace(conn))
+{
+    if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
+        throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings:AuthDb (PORT-05)");
+    // Dev-only placeholder (overridden by env/sync-env, not committed as secret)
+    conn = "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=__DEV_ONLY__";
+}
 if (builder.Environment.IsEnvironment("Testing"))
 {
     var dbName = $"auth-test-{Guid.NewGuid()}";
@@ -37,20 +46,54 @@ else
     builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
 }
 
-// CORS — trust gateway + Vercel + localhost dev
-var corsOrigins = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://job-platform-web.vercel.app";
-var origins = corsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-builder.Services.AddCors(o => o.AddPolicy("Default", p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+// ForwardedHeaders — required behind gateway/Render YARP so RemoteIpAddress reflects client IP (SEC-06)
+builder.Services.Configure<ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    o.KnownIPNetworks.Clear();
+    o.KnownProxies.Clear();
+});
+
+// CORS — trust gateway + Vercel + localhost dev + wildcard preview *-jp-web.vercel.app
+var corsOriginsRaw = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
+var origins = corsOriginsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+var originSet = new HashSet<string>(origins, StringComparer.OrdinalIgnoreCase);
+var previewRegex = new Regex(@"^https://([a-z0-9-]+\.)*jp-web(-\w+)?\.vercel\.app$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+builder.Services.AddCors(o => o.AddPolicy("Default", p => p
+    .SetIsOriginAllowed(origin =>
+        originSet.Contains(origin) ||
+        previewRegex.IsMatch(origin) ||
+        (origin.StartsWith("https://", StringComparison.OrdinalIgnoreCase) && origin.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase) && origin.Contains("jp-web", StringComparison.OrdinalIgnoreCase)))
+    .AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 // Services
 builder.Services.AddSingleton<PasswordHasherService>();
 builder.Services.AddSingleton<JwtTokenService>();
-builder.Services.AddSingleton<IEmailSender, LoggerEmailSender>();
+// MailKit SmtpEmailSender when SMTP_HOST configured, else Logger fallback (local/dev)
+builder.Services.AddSingleton<IEmailSender>(sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+    var smtpHost = config["SMTP_HOST"] ?? config["EMAIL_SMTP_HOST"];
+    if (!string.IsNullOrWhiteSpace(smtpHost))
+        return new SmtpEmailSender(
+            sp.GetRequiredService<ILogger<SmtpEmailSender>>(),
+            config);
+    return new LoggerEmailSender(
+        loggerFactory.CreateLogger<LoggerEmailSender>(),
+        config);
+});
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddHostedService<ExpiredTokenPurgeService>();
 
 // Company validation HttpClient (Option A — no DB duplication)
-var jobBaseUrl = builder.Configuration["JOB_SERVICE_URL"] ?? builder.Configuration["COMPANY_SERVICE_URL"] ?? "http://localhost:5002";
+var jobBaseUrl = builder.Configuration["JOB_SERVICE_URL"] ?? builder.Configuration["COMPANY_SERVICE_URL"];
+if (string.IsNullOrWhiteSpace(jobBaseUrl))
+{
+    if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
+        throw new InvalidOperationException("JOB_SERVICE_URL missing — required for Recruiter companyId validation (PORT-05)");
+    jobBaseUrl = "http://localhost:5002";
+}
 builder.Services.AddHttpClient<ICompanyValidationClient, HttpCompanyValidationClient>(c => c.BaseAddress = new Uri(jobBaseUrl));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -70,13 +113,24 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// Rate limiting SEC-06: global 100/min per IP + forgot 5/h per IP
+// Rate limiting SEC-06: global 100/min per IP + forgot 5/h per IP (partition via X-Forwarded-For when behind proxy)
+static string GetRateLimitPartitionKey(HttpContext httpContext)
+{
+    var xff = httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault();
+    if (!string.IsNullOrWhiteSpace(xff))
+    {
+        var first = xff.Split(',')[0].Trim();
+        if (!string.IsNullOrWhiteSpace(first)) return first;
+    }
+    return httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+}
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
     options.AddPolicy("global", httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            partitionKey: GetRateLimitPartitionKey(httpContext),
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 100,
@@ -85,18 +139,13 @@ builder.Services.AddRateLimiter(options =>
             }));
     options.AddPolicy("forgot", httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            partitionKey: GetRateLimitPartitionKey(httpContext),
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 5,
                 Window = TimeSpan.FromHours(1),
                 QueueLimit = 0
             }));
-    options.AddFixedWindowLimiter("global-fixed", o =>
-    {
-        o.PermitLimit = 100;
-        o.Window = TimeSpan.FromMinutes(1);
-    });
 });
 
 // ProblemDetails + Swagger + health
@@ -126,6 +175,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseForwardedHeaders();
 app.UseCors("Default");
 app.UseRateLimiter();
 app.UseAuthentication();

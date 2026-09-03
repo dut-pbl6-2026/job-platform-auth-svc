@@ -17,16 +17,10 @@ public class LoggerEmailSender : IEmailSender
 
     public Task SendPasswordResetAsync(string email, string resetLink, CancellationToken ct = default)
     {
-        var smtpHost = _config["EMAIL_SMTP_HOST"];
-        if (string.IsNullOrWhiteSpace(smtpHost))
-        {
-            _logger.LogInformation("AUDIT PasswordReset Email={Email} Link={Link} (logger fallback — no SMTP configured)", email, resetLink);
-            return Task.CompletedTask;
-        }
-
-        // SMTP host configured — log and defer to external provider (Resend/SMTP relay).
-        // Keeping logger abstraction to avoid hard SMTP coupling in MUST; production can swap via DI.
-        _logger.LogInformation("AUDIT PasswordReset Email={Email} Link={Link} SmtpHost={Host}", email, resetLink, smtpHost);
+        // Sanitize: never log full resetLink at Information (SEC-08); hash preview at Debug only
+        var hash = resetLink.Length > 16 ? resetLink[..16] + "..." : resetLink;
+        _logger.LogInformation("AUDIT PasswordReset Email={Email} Sent=false Reason=NoSmtp (fallback)", email);
+        _logger.LogDebug("AUDIT PasswordReset Email={Email} LinkHash={Hash} (logger fallback — no SMTP configured)", email, hash);
         return Task.CompletedTask;
     }
 }
