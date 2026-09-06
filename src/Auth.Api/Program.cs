@@ -8,8 +8,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using SharedKernel;
 using Microsoft.OpenApi.Models;
+using SharedKernel;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,9 +23,7 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     jwt.Secret = "dev-jwt-secret-change-me-32chars-min";
 }
 
-// PORT-05: No hardcoded secrets in source code. Production/Staging requires env vars; Dev falls back to a placeholder.
-// EF — always Npgsql (production, dev, and Testing). Integration tests inject
-// the Testcontainers connection string via WebApplicationFactory override.
+// EF — Npgsql Connection Setup
 var conn = builder.Configuration.GetConnectionString("AuthDb")
            ?? builder.Configuration["DATABASE_URL_AUTH"]
            ?? builder.Configuration["ConnectionStrings:AuthDb"];
@@ -36,54 +34,52 @@ if (string.IsNullOrWhiteSpace(conn))
     {
         throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings:AuthDb (PORT-05)");
     }
-
-    // Dev/Testing-only placeholder (overridden by env/sync-env, never committed as a secret).
-    // In Testing, WebApplicationFactory replaces this registration with the Testcontainers DB.
     conn = "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=__DEV_ONLY__";
 }
 
 builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
 
-// ForwardedHeaders — required behind gateway/Render YARP so RemoteIpAddress reflects client IP (SEC-06)
+// ForwardedHeaders
 builder.Services.Configure<ForwardedHeadersOptions>(o =>
 {
     o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     o.KnownIPNetworks.Clear();
     o.KnownProxies.Clear();
+    o.ForwardLimit = 2; // Cloud Ingress + Gateway hops
 });
 
-// CORS — trust gateway + Vercel + localhost dev
+// CORS
 var corsOriginsRaw = builder.Configuration["CORS_ORIGINS"]
     ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
 var origins = corsOriginsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 var originSet = new HashSet<string>(origins, StringComparer.OrdinalIgnoreCase);
+
 builder.Services.AddCors(o => o.AddPolicy("Default", p => p
     .SetIsOriginAllowed(origin => originSet.Contains(origin))
     .AllowAnyHeader()
     .AllowAnyMethod()
     .AllowCredentials()));
 
-// Services
+// Application Services
 builder.Services.AddSingleton<PasswordHasherService>();
 builder.Services.AddSingleton<JwtTokenService>();
-// MailKit SmtpEmailSender when SMTP_HOST configured, else Logger fallback (local/dev)
+
 builder.Services.AddSingleton<IEmailSender>(sp =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
     var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
     var smtpHost = config["SMTP_HOST"] ?? config["EMAIL_SMTP_HOST"];
+
     if (!string.IsNullOrWhiteSpace(smtpHost))
-        return new SmtpEmailSender(
-            sp.GetRequiredService<ILogger<SmtpEmailSender>>(),
-            config);
-    return new LoggerEmailSender(
-        loggerFactory.CreateLogger<LoggerEmailSender>(),
-        config);
+        return new SmtpEmailSender(sp.GetRequiredService<ILogger<SmtpEmailSender>>(), config);
+
+    return new LoggerEmailSender(loggerFactory.CreateLogger<LoggerEmailSender>(), config);
 });
+
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddHostedService<ExpiredTokenPurgeService>();
 
-// Company validation HttpClient (rules: AGENTS.md `HttpClient — outbound rules`)
+// Outbound Client: Company Validation
 var jobBaseUrl = builder.Configuration["JOB_SERVICE_URL"] ?? builder.Configuration["COMPANY_SERVICE_URL"];
 if (string.IsNullOrWhiteSpace(jobBaseUrl))
 {
@@ -92,6 +88,7 @@ if (string.IsNullOrWhiteSpace(jobBaseUrl))
     jobBaseUrl = "http://localhost:5002";
 }
 jobBaseUrl = jobBaseUrl.Trim().TrimEnd('/') + "/";
+
 builder.Services
     .AddHttpClient<ICompanyValidationClient, HttpCompanyValidationClient>(c =>
     {
@@ -104,6 +101,7 @@ builder.Services
         o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(10);
     });
 
+// Auth & JWT
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
     {
@@ -121,30 +119,42 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// Rate limiting SEC-06: fine-grained only — forgot-password 5/h per IP.
-// Coarse DDoS/bot protection lives at the gateway (per-IP 600/min).
-// NOTE: direct-to-service calls bypassing the gateway lose
-// the DDoS layer — use private networking once off the free tier.
-static string GetRateLimitPartitionKey(HttpContext httpContext)
-{
-    return httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-}
-
+// Rate Limiting (Fine-Grained)
 builder.Services.AddRateLimiter(options =>
 {
-    options.RejectionStatusCode = 429;
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.OnRejected = async (context, token) =>
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((int)Math.Max(1, retryAfter.TotalSeconds)).ToString();
+        }
+
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            status = 429,
+            title = "Too Many Requests",
+            detail = "Forgot password request limit exceeded. Please try again later."
+        }, cancellationToken: token);
+    };
+
     options.AddPolicy("forgot", httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: GetRateLimitPartitionKey(httpContext),
+    {
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 5,
                 Window = TimeSpan.FromHours(1),
                 QueueLimit = 0
-            }));
+            });
+    });
 });
 
-// ProblemDetails + Swagger + health
+// OpenAPI & Health
 builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -158,12 +168,12 @@ builder.Services.AddSwaggerGen(c =>
         BearerFormat = "JWT"
     });
     c.AddSecurityRequirement(new OpenApiSecurityRequirement{{
-        new OpenApiSecurityScheme{Reference=new OpenApiReference{Type=ReferenceType.SecurityScheme, Id="Bearer"}}, Array.Empty<string>()}});
+        new OpenApiSecurityScheme{Reference = new OpenApiReference{Type = ReferenceType.SecurityScheme, Id = "Bearer"}}, Array.Empty<string>()}});
 });
 
 var app = builder.Build();
 
-// Intrastructure setip & auto-migration
+// DB Auto-Migration
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
@@ -177,11 +187,11 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex)
     {
         logger.LogCritical(ex, "DB migration failed — shutting down application");
-        throw; // fail-fast
+        throw;
     }
 }
 
-// Middleware pipeline
+// Pipeline
 app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
@@ -197,7 +207,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Route mappings
+// Routes
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
 app.MapAuthEndpoints();
