@@ -2,6 +2,7 @@ using Auth.Core.Contracts;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
+using Auth.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,8 +12,20 @@ using SharedKernel;
 
 namespace Auth.Tests;
 
-public class AuthServiceTests
+[Collection(PostgresCollection.Name)]
+public class AuthServiceTests : IAsyncLifetime
 {
+    private readonly PostgresFixture _fixture;
+
+    public AuthServiceTests(PostgresFixture fixture)
+    {
+        _fixture = fixture;
+    }
+
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private static JwtOptions JwtOptions => new()
     {
         Secret = "dev-jwt-secret-change-me-32chars-min",
@@ -21,13 +34,7 @@ public class AuthServiceTests
         ExpiresMinutes = 60
     };
 
-    private AuthDbContext CreateDb()
-    {
-        var opt = new DbContextOptionsBuilder<AuthDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        return new AuthDbContext(opt);
-    }
+    private AuthDbContext CreateDb() => _fixture.CreateDbContext();
 
     private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null)
     {

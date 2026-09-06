@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
 using Auth.Api.Endpoints;
 using Auth.Core.Interfaces;
@@ -7,10 +6,10 @@ using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using SharedKernel;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,27 +23,26 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     jwt.Secret = "dev-jwt-secret-change-me-32chars-min";
 }
 
-// EF — Use InMemory for Testing env to avoid Npgsql/InMemory dual provider conflict
-// PORT-05: no hardcoded secrets in source — Production requires env, dev falls back to placeholder
+// PORT-05: No hardcoded secrets in source code. Production/Staging requires env vars; Dev falls back to a placeholder.
+// EF — always Npgsql (production, dev, and Testing). Integration tests inject
+// the Testcontainers connection string via WebApplicationFactory override.
 var conn = builder.Configuration.GetConnectionString("AuthDb")
            ?? builder.Configuration["DATABASE_URL_AUTH"]
            ?? builder.Configuration["ConnectionStrings:AuthDb"];
+
 if (string.IsNullOrWhiteSpace(conn))
 {
     if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
+    {
         throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings:AuthDb (PORT-05)");
-    // Dev-only placeholder (overridden by env/sync-env, not committed as secret)
+    }
+
+    // Dev/Testing-only placeholder (overridden by env/sync-env, never committed as a secret).
+    // In Testing, WebApplicationFactory replaces this registration with the Testcontainers DB.
     conn = "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=__DEV_ONLY__";
 }
-if (builder.Environment.IsEnvironment("Testing"))
-{
-    var dbName = $"auth-test-{Guid.NewGuid()}";
-    builder.Services.AddDbContext<AuthDbContext>(o => o.UseInMemoryDatabase(dbName));
-}
-else
-{
-    builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
-}
+
+builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
 
 // ForwardedHeaders — required behind gateway/Render YARP so RemoteIpAddress reflects client IP (SEC-06)
 builder.Services.Configure<ForwardedHeadersOptions>(o =>
@@ -54,17 +52,16 @@ builder.Services.Configure<ForwardedHeadersOptions>(o =>
     o.KnownProxies.Clear();
 });
 
-// CORS — trust gateway + Vercel + localhost dev + wildcard preview *-jp-web.vercel.app
-var corsOriginsRaw = builder.Configuration["CORS_ORIGINS"] ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
+// CORS — trust gateway + Vercel + localhost dev
+var corsOriginsRaw = builder.Configuration["CORS_ORIGINS"]
+    ?? "http://localhost:5173,http://localhost:3000,https://jp-web.vercel.app,https://job-platform-web.vercel.app";
 var origins = corsOriginsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 var originSet = new HashSet<string>(origins, StringComparer.OrdinalIgnoreCase);
-var previewRegex = new Regex(@"^https://([a-z0-9-]+\.)*jp-web(-\w+)?\.vercel\.app$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 builder.Services.AddCors(o => o.AddPolicy("Default", p => p
-    .SetIsOriginAllowed(origin =>
-        originSet.Contains(origin) ||
-        previewRegex.IsMatch(origin) ||
-        (origin.StartsWith("https://", StringComparison.OrdinalIgnoreCase) && origin.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase) && origin.Contains("jp-web", StringComparison.OrdinalIgnoreCase)))
-    .AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+    .SetIsOriginAllowed(origin => originSet.Contains(origin))
+    .AllowAnyHeader()
+    .AllowAnyMethod()
+    .AllowCredentials()));
 
 // Services
 builder.Services.AddSingleton<PasswordHasherService>();
@@ -86,7 +83,7 @@ builder.Services.AddSingleton<IEmailSender>(sp =>
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddHostedService<ExpiredTokenPurgeService>();
 
-// Company validation HttpClient (Option A — no DB duplication)
+// Company validation HttpClient (rules: AGENTS.md `HttpClient — outbound rules`)
 var jobBaseUrl = builder.Configuration["JOB_SERVICE_URL"] ?? builder.Configuration["COMPANY_SERVICE_URL"];
 if (string.IsNullOrWhiteSpace(jobBaseUrl))
 {
@@ -94,7 +91,18 @@ if (string.IsNullOrWhiteSpace(jobBaseUrl))
         throw new InvalidOperationException("JOB_SERVICE_URL missing — required for Recruiter companyId validation (PORT-05)");
     jobBaseUrl = "http://localhost:5002";
 }
-builder.Services.AddHttpClient<ICompanyValidationClient, HttpCompanyValidationClient>(c => c.BaseAddress = new Uri(jobBaseUrl));
+jobBaseUrl = jobBaseUrl.Trim().TrimEnd('/') + "/";
+builder.Services
+    .AddHttpClient<ICompanyValidationClient, HttpCompanyValidationClient>(c =>
+    {
+        c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
+        c.Timeout = Timeout.InfiniteTimeSpan;
+    })
+    .AddStandardResilienceHandler(o =>
+    {
+        o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3);
+        o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(10);
+    });
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
@@ -108,35 +116,23 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = jwt.Issuer,
             ValidAudience = jwt.Audience,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Secret)),
-            ClockSkew = TimeSpan.Zero
+            ClockSkew = TimeSpan.FromSeconds(30)
         };
     });
 builder.Services.AddAuthorization();
 
-// Rate limiting SEC-06: global 100/min per IP + forgot 5/h per IP (partition via X-Forwarded-For when behind proxy)
+// Rate limiting SEC-06: fine-grained only — forgot-password 5/h per IP.
+// Coarse DDoS/bot protection lives at the gateway (per-IP 600/min).
+// NOTE: direct-to-service calls bypassing the gateway lose
+// the DDoS layer — use private networking once off the free tier.
 static string GetRateLimitPartitionKey(HttpContext httpContext)
 {
-    var xff = httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault();
-    if (!string.IsNullOrWhiteSpace(xff))
-    {
-        var first = xff.Split(',')[0].Trim();
-        if (!string.IsNullOrWhiteSpace(first)) return first;
-    }
     return httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 }
 
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
-    options.AddPolicy("global", httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: GetRateLimitPartitionKey(httpContext),
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 100,
-                Window = TimeSpan.FromMinutes(1),
-                QueueLimit = 0
-            }));
     options.AddPolicy("forgot", httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
             partitionKey: GetRateLimitPartitionKey(httpContext),
@@ -153,23 +149,42 @@ builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        In = ParameterLocation.Header,
         Name = "Authorization",
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+        Type = SecuritySchemeType.Http,
         Scheme = "bearer",
         BearerFormat = "JWT"
     });
-    c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement{{
-        new Microsoft.OpenApi.Models.OpenApiSecurityScheme{Reference=new Microsoft.OpenApi.Models.OpenApiReference{Type=Microsoft.OpenApi.Models.ReferenceType.SecurityScheme, Id="Bearer"}}, new string[]{}}});
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement{{
+        new OpenApiSecurityScheme{Reference=new OpenApiReference{Type=ReferenceType.SecurityScheme, Id="Bearer"}}, Array.Empty<string>()}});
 });
 
 var app = builder.Build();
 
+// Intrastructure setip & auto-migration
+using (var scope = app.Services.CreateScope())
+{
+    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
+    var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
+
+    try
+    {
+        db.Database.Migrate();
+        logger.LogInformation("DB migrated successfully");
+    }
+    catch (Exception ex)
+    {
+        logger.LogCritical(ex, "DB migration failed — shutting down application");
+        throw; // fail-fast
+    }
+}
+
+// Middleware pipeline
 app.UseExceptionHandler();
 
-if (app.Environment.IsDevelopment())
+if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -178,37 +193,14 @@ if (app.Environment.IsDevelopment())
 app.UseForwardedHeaders();
 app.UseCors("Default");
 app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Route mappings
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
 app.MapAuthEndpoints();
-
-// Auto-migrate on startup (skip for InMemory Testing)
-using (var scope = app.Services.CreateScope())
-{
-    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
-    var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
-    if (!db.Database.IsInMemory())
-    {
-        try
-        {
-            db.Database.Migrate();
-            logger.LogInformation("DB migrated successfully");
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "DB migrate failed");
-            if (app.Environment.IsDevelopment()) throw;
-        }
-    }
-    else
-    {
-        db.Database.EnsureCreated();
-        logger.LogInformation("InMemory DB ensured created (Testing)");
-    }
-}
 
 app.Run();
 
