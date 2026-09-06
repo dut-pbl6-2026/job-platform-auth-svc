@@ -1,5 +1,5 @@
-using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
+using Auth.Api.Filters;
 using Auth.Core.Contracts;
 using Auth.Core.Interfaces;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -7,11 +7,8 @@ using Microsoft.AspNetCore.Http.HttpResults;
 namespace Auth.Api.Endpoints;
 
 /// <summary>
-/// Auth endpoints — validation is performed explicitly via <see cref="Validator.TryValidateObject"/>
-/// to ensure portable, dependency-free execution on Minimal API.
-/// This avoids reliance on <c>WithParameterValidation()</c> which fluctuates across .NET 10 preview ref packs
-/// and requires extra <c>Microsoft.AspNetCore.OpenApi</c> surface; the centralized <see cref="Validate{T}"/>
-/// helper also handles trim/whitespace edge cases (e.g., "   " bypassing [Required]) without custom attributes.
+/// Auth endpoints — request validation via generic <see cref="ValidationFilter{T}"/>
+/// endpoint filter (DataAnnotations on DTOs + <c>NonWhitespace</c> for blank strings).
 /// </summary>
 public static class AuthEndpoints
 {
@@ -24,12 +21,6 @@ public static class AuthEndpoints
             IAuthService svc,
             CancellationToken ct) =>
         {
-            if (!string.IsNullOrWhiteSpace(req.CompanyName))
-                return Results.Problem(statusCode: 400, detail: "companyName is deprecated. Please create company first and use companyId.");
-
-            var validation = Validate(req);
-            if (validation is not null) return validation;
-
             if (req.CompanyId.HasValue && req.CompanyId.Value == Guid.Empty)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["CompanyId"] = ["Invalid companyId"] });
 
@@ -60,7 +51,7 @@ public static class AuthEndpoints
         })
         .WithName("Register")
         .WithSummary("Register new user")
-        .RequireRateLimiting("global")
+        .AddEndpointFilter<ValidationFilter<RegisterRequest>>()
         .Produces<RegisterResponse>(201)
         .ProducesValidationProblem()
         .ProducesProblem(409);
@@ -70,9 +61,6 @@ public static class AuthEndpoints
             IAuthService svc,
             CancellationToken ct) =>
         {
-            var validation = Validate(req);
-            if (validation is not null) return validation;
-
             var result = await svc.LoginAsync(req, ct);
             if (!result.IsSuccess)
             {
@@ -87,7 +75,7 @@ public static class AuthEndpoints
         })
         .WithName("Login")
         .WithSummary("Login and issue JWT")
-        .RequireRateLimiting("global")
+        .AddEndpointFilter<ValidationFilter<LoginRequest>>()
         .Produces<AuthResponse>(200)
         .Produces(401)
         .ProducesProblem(403);
@@ -97,9 +85,6 @@ public static class AuthEndpoints
             IAuthService svc,
             CancellationToken ct) =>
         {
-            var validation = Validate(req);
-            if (validation is not null) return validation;
-
             var result = await svc.RefreshAsync(req.RefreshToken, ct);
             if (!result.IsSuccess)
             {
@@ -116,7 +101,7 @@ public static class AuthEndpoints
         })
         .WithName("Refresh")
         .WithSummary("Rotate refresh token (family-scoped reuse detection)")
-        .RequireRateLimiting("global")
+        .AddEndpointFilter<ValidationFilter<RefreshRequest>>()
         .Produces<AuthResponse>(200)
         .Produces(401);
 
@@ -139,6 +124,7 @@ public static class AuthEndpoints
         .RequireAuthorization()
         .WithName("Logout")
         .WithSummary("Revoke refresh token(s)")
+        .AddEndpointFilter<ValidationFilter<LogoutRequest>>()
         .Produces(204)
         .Produces(401);
 
@@ -169,15 +155,13 @@ public static class AuthEndpoints
             IAuthService svc,
             CancellationToken ct) =>
         {
-            var validation = Validate(req);
-            if (validation is not null) return validation;
-
             await svc.ForgotPasswordAsync(req, ct);
             // Always 200 anti-enumeration per SRS AUTH-01-07
             return Results.Ok(new { message = "If email exists, reset link sent" });
         })
         .WithName("ForgotPassword")
         .WithSummary("Request password reset (anti-enumeration, 15m TTL, 5/IP/h)")
+        .AddEndpointFilter<ValidationFilter<ForgotPasswordRequest>>()
         .RequireRateLimiting("forgot")
         .Produces(200)
         .ProducesValidationProblem();
@@ -187,9 +171,6 @@ public static class AuthEndpoints
             IAuthService svc,
             CancellationToken ct) =>
         {
-            var validation = Validate(req);
-            if (validation is not null) return validation;
-
             var result = await svc.ResetPasswordAsync(req, ct);
             if (!result.IsSuccess)
             {
@@ -204,64 +185,11 @@ public static class AuthEndpoints
         })
         .WithName("ResetPassword")
         .WithSummary("Reset password (single-use 15m, revokes all refresh tokens)")
+        .AddEndpointFilter<ValidationFilter<ResetPasswordRequest>>()
         .Produces(200)
         .Produces(401)
         .ProducesValidationProblem();
 
         return app;
-    }
-
-    /// <summary>
-    /// Centralized DataAnnotations validation via <see cref="Validator.TryValidateObject"/> + whitespace guard.
-    /// Returns standardized <see cref="Results.ValidationProblem"/> with field-level errors; null if valid.
-    /// Keeps Minimal API endpoints portable across .NET 10 preview SDKs without WithParameterValidation.
-    /// </summary>
-    private static IResult? Validate<T>(T req)
-    {
-        var results = new List<ValidationResult>();
-        var ctx = new ValidationContext(req!);
-        Validator.TryValidateObject(req!, ctx, results, true);
-
-        // DataAnnotations [Required] allows whitespace; enforce non-whitespace for key fields
-        if (req is RegisterRequest rr)
-        {
-            if (string.IsNullOrWhiteSpace(rr.FullName))
-                results.Add(new ValidationResult("FullName is required", ["FullName"]));
-            if (string.IsNullOrWhiteSpace(rr.Email))
-                results.Add(new ValidationResult("Email is required", ["Email"]));
-            if (string.IsNullOrWhiteSpace(rr.Password))
-                results.Add(new ValidationResult("Password is required", ["Password"]));
-        }
-        else if (req is LoginRequest lr)
-        {
-            if (string.IsNullOrWhiteSpace(lr.Email))
-                results.Add(new ValidationResult("Email is required", ["Email"]));
-            if (string.IsNullOrWhiteSpace(lr.Password))
-                results.Add(new ValidationResult("Password is required", ["Password"]));
-        }
-        else if (req is RefreshRequest rr2)
-        {
-            if (string.IsNullOrWhiteSpace(rr2.RefreshToken))
-                results.Add(new ValidationResult("RefreshToken is required", ["RefreshToken"]));
-        }
-        else if (req is ForgotPasswordRequest fr)
-        {
-            if (string.IsNullOrWhiteSpace(fr.Email))
-                results.Add(new ValidationResult("Email is required", ["Email"]));
-        }
-        else if (req is ResetPasswordRequest rp)
-        {
-            if (string.IsNullOrWhiteSpace(rp.Token))
-                results.Add(new ValidationResult("Token is required", ["Token"]));
-            if (string.IsNullOrWhiteSpace(rp.NewPassword))
-                results.Add(new ValidationResult("NewPassword is required", ["NewPassword"]));
-        }
-
-        if (results.Count == 0) return null;
-
-        var errors = results
-            .GroupBy(r => r.MemberNames.FirstOrDefault() ?? "request")
-            .ToDictionary(g => g.Key, g => g.Select(v => v.ErrorMessage ?? "Invalid").ToArray());
-        return Results.ValidationProblem(errors);
     }
 }

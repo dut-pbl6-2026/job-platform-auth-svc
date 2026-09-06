@@ -46,9 +46,17 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 - Migrations `src/Auth.Infrastructure/Data/Migrations/` (Init, FixTokenHash, snapshot) — `mise run ef-check` (`dotnet ef migrations has-pending-model-changes`) in PR+CI, auto-migrate on startup with `ILogger` (`Program.cs: Migrate()`).
 - `NFR REL-01` retry 3 exp backoff, pooling `MaxPoolSize=20` via infra `env`.
 
+## HttpClient — outbound rules
+
+- `BaseAddress` always ends with `/` (domain-only or subpath): `url.Trim().TrimEnd('/') + "/"` at registration.
+- Relative request paths never start with `/` (leading slash discards `BaseAddress` subpath per RFC 3986).
+- `Timeout = Timeout.InfiniteTimeSpan` on the client; timing owned by the resilience pipeline (no double-timeout).
+- `Microsoft.Extensions.Http.Resilience` `AddStandardResilienceHandler` — retry transient GET `5xx/408`/timeouts only, never `4xx` business answers (`404`). Current: `AttemptTimeout 3s` + `TotalRequestTimeout 10s` for company validation (`JOB_SERVICE_URL`/`COMPANY_SERVICE_URL`, `Program.cs`).
+- Fail-closed on exhausted resilience (`ExistsAsync → false`); ctor guards null `BaseAddress` fail-fast.
+
 ## Security (SRS 6 `SEC-*`)
 
-`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 100/min IP+user`, `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
+`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained only forgot-password 5/h per IP (fixed window, 429)`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
 
 ## 2026 best practice (NFR `MAINT`)
 

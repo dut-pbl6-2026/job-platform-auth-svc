@@ -13,13 +13,15 @@ public class HttpCompanyValidationClient : ICompanyValidationClient
     {
         _http = http;
         _logger = logger;
+        ArgumentNullException.ThrowIfNull(_http.BaseAddress, nameof(http.BaseAddress));
     }
 
     public async Task<bool> ExistsAsync(Guid companyId, CancellationToken ct = default)
     {
         try
         {
-            var resp = await _http.GetAsync($"/api/companies/{companyId}", ct);
+            // No leading '/' per AGENTS.md outbound rules (RFC 3986 subpath).
+            var resp = await _http.GetAsync($"api/companies/{companyId}", ct);
             if (resp.IsSuccessStatusCode) return true;
             if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return false;
             _logger.LogWarning("Company validation HTTP {Status} CompanyId {CompanyId}", resp.StatusCode, companyId);
