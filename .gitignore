@@ -7,3 +7,5 @@ obj/
 .env.bak.*
 mise.toml.local
 INFISICAL_TOKEN
+*.user
+*.csproj.user

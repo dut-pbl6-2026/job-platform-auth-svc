@@ -49,7 +49,7 @@ public class SmtpEmailSender : IEmailSender
 
             using var client = new SmtpClient();
             // MailHog local: no SSL, no auth; prod: STARTTLS/SSL
-            var secure = useSsl ? SecureSocketOptions.StartTlsWhenAvailable : SecureSocketOptions.None;
+            var secure = useSsl ? SecureSocketOptions.StartTls : SecureSocketOptions.None;
             // Allow MailHog self-signed / no TLS
             if (host is "localhost" or "127.0.0.1" or "mailhog")
                 secure = SecureSocketOptions.None;
