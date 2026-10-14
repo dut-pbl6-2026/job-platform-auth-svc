@@ -9,3 +9,5 @@ mise.toml.local
 INFISICAL_TOKEN
 *.user
 *.csproj.user
+
+.verification-packages/

@@ -26,6 +26,8 @@ jobs:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: ${{ runner.os }}-nuget-
+      - name: Restore pinned local feed
+        run: dotnet restore AuthService.sln --packages "${{ runner.temp }}/pinned-packages"
       - name: Install dotnet-ef
         run: dotnet tool install --global dotnet-ef --version 10.0.4
       - name: Format check
