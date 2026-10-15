@@ -11,3 +11,5 @@ INFISICAL_TOKEN
 *.csproj.user
 
 .verification-packages/
+.contract-packages/
+local-feed/*-contract.*.nupkg
