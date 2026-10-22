@@ -9,3 +9,7 @@ mise.toml.local
 INFISICAL_TOKEN
 *.user
 *.csproj.user
+
+.verification-packages/
+.contract-packages/
+local-feed/*-contract.*.nupkg
