@@ -158,6 +158,16 @@ public class AuthEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifeti
     }
 
     [Fact]
+    public async Task Register_AdminRole_400()
+    {
+        var client = _factory.CreateClient();
+        var res = await client.PostAsJsonAsync(
+            "/api/auth/register",
+            new RegisterRequest($"admin{Guid.NewGuid():N}@test.com", "SecureP@ss123", "Admin", "Admin"));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
     public async Task Login_BlankPassword_400()
     {
         var client = _factory.CreateClient();

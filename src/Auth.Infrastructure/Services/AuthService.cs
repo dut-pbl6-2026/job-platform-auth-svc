@@ -34,7 +34,8 @@ public class AuthService : IAuthService
     {
         var email = request.Email.Trim().ToLowerInvariant();
         var role = string.IsNullOrWhiteSpace(request.Role) ? "User" : request.Role.Trim();
-        var allowedRoles = new[] { "User", "Recruiter", "Admin" };
+        // Admin accounts are provisioned out-of-band (DB bootstrap), never via public registration.
+        var allowedRoles = new[] { "User", "Recruiter" };
         if (!allowedRoles.Contains(role))
             return Result<Guid>.Failure("Invalid role");
 
