@@ -3,6 +3,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
+using System.Net.Http.Headers;
 using Auth.Api.Endpoints;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
@@ -122,6 +123,51 @@ builder.Services
     {
         c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
         c.Timeout = Timeout.InfiniteTimeSpan;
+    })
+    .AddStandardResilienceHandler(o =>
+    {
+        o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3);
+        o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(10);
+    });
+
+var appServiceUrl = builder.Configuration["APP_SERVICE_URL"];
+if (string.IsNullOrWhiteSpace(appServiceUrl))
+{
+    if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
+        throw new InvalidOperationException("APP_SERVICE_URL missing — required for admin stats aggregation");
+    appServiceUrl = "http://localhost:5004";
+}
+
+var jobInternalToken = builder.Configuration["JOB_SERVICE_INTERNAL_TOKEN"];
+var appInternalToken = builder.Configuration["APP_SERVICE_INTERNAL_TOKEN"];
+if ((builder.Environment.IsProduction() || builder.Environment.IsStaging()) &&
+    (string.IsNullOrWhiteSpace(jobInternalToken) || string.IsNullOrWhiteSpace(appInternalToken)))
+{
+    throw new InvalidOperationException(
+        "JOB_SERVICE_INTERNAL_TOKEN and APP_SERVICE_INTERNAL_TOKEN are required for admin stats aggregation");
+}
+
+builder.Services
+    .AddHttpClient<IJobServiceClient, JobServiceClient>(c =>
+    {
+        c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
+        c.Timeout = Timeout.InfiniteTimeSpan;
+        if (!string.IsNullOrWhiteSpace(jobInternalToken))
+            c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jobInternalToken);
+    })
+    .AddStandardResilienceHandler(o =>
+    {
+        o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3);
+        o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(10);
+    });
+
+builder.Services
+    .AddHttpClient<IAppServiceClient, AppServiceClient>(c =>
+    {
+        c.BaseAddress = new Uri(appServiceUrl, UriKind.Absolute);
+        c.Timeout = Timeout.InfiniteTimeSpan;
+        if (!string.IsNullOrWhiteSpace(appInternalToken))
+            c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", appInternalToken);
     })
     .AddStandardResilienceHandler(o =>
     {
