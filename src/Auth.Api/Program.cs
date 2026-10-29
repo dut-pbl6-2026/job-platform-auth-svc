@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -137,6 +137,7 @@ if (string.IsNullOrWhiteSpace(appServiceUrl))
         throw new InvalidOperationException("APP_SERVICE_URL missing — required for admin stats aggregation");
     appServiceUrl = "http://localhost:5004";
 }
+appServiceUrl = appServiceUrl.Trim().TrimEnd('/') + "/"; // normalize trailing slash (AGENTS.md: BaseAddress must end with /)
 
 var jobInternalToken = builder.Configuration["JOB_SERVICE_INTERNAL_TOKEN"];
 var appInternalToken = builder.Configuration["APP_SERVICE_INTERNAL_TOKEN"];
