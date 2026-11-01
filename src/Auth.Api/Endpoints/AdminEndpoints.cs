@@ -1,5 +1,7 @@
 using Auth.Core.Contracts;
 using Auth.Core.Interfaces;
+using Auth.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace Auth.Api.Endpoints;
 
@@ -98,8 +100,71 @@ public static class AdminEndpoints
         .ProducesProblem(403)
         .ProducesProblem(404);
 
+        group.MapGet("/stats", async (
+            HttpContext ctx,
+            AuthDbContext db,
+            IJobServiceClient jobClient,
+            IAppServiceClient appClient,
+            CancellationToken ct) =>
+        {
+            var denied = EnsureAdmin(ctx, out _);
+            if (denied is not null) return denied;
+
+            var jobTask = jobClient.GetStatsOrNullAsync(ct);
+            var appTask = appClient.GetStatsOrNullAsync(ct);
+            await Task.WhenAll(jobTask, appTask);
+
+            var now = DateTime.UtcNow;
+            var monthStart = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            var users = db.Users.AsNoTracking();
+            var byRole = await users
+                .GroupBy(user => user.Role)
+                .ToDictionaryAsync(grouping => grouping.Key, grouping => grouping.Count(), ct);
+
+            var userStats = new StatsSection(
+                Status: "ok",
+                Total: await users.CountAsync(ct),
+                Active: await users.CountAsync(user => user.IsActive, ct),
+                Inactive: await users.CountAsync(user => !user.IsActive, ct),
+                ByRole: byRole,
+                NewThisMonth: await users.CountAsync(user => user.CreatedAt >= monthStart, ct));
+
+            return Results.Ok(new AdminStatsResponse(
+                Users: userStats,
+                Jobs: ToJobStatsSection(jobTask.Result),
+                Applications: ToApplicationStatsSection(appTask.Result)));
+        })
+        .WithName("AdminGetStats")
+        .WithSummary("Get aggregate admin dashboard statistics")
+        .Produces<AdminStatsResponse>(200)
+        .ProducesProblem(401)
+        .ProducesProblem(403);
+
         return app;
     }
+
+    private static StatsSection ToJobStatsSection(JobStats? stats) =>
+        stats is null
+            ? new StatsSection("unavailable", null)
+            : new StatsSection(
+                Status: "ok",
+                Total: stats.Total,
+                Pending: stats.Pending,
+                Active: stats.Active,
+                Closed: stats.Closed,
+                Rejected: stats.Rejected,
+                NewThisMonth: stats.NewThisMonth);
+
+    private static StatsSection ToApplicationStatsSection(ApplicationStats? stats) =>
+        stats is null
+            ? new StatsSection("unavailable", null)
+            : new StatsSection(
+                Status: "ok",
+                Total: stats.Total,
+                Pending: stats.Pending,
+                Accepted: stats.Accepted,
+                Rejected: stats.Rejected,
+                NewThisMonth: stats.NewThisMonth);
 
     private static IResult? EnsureAdmin(HttpContext ctx, out Guid adminId)
     {
