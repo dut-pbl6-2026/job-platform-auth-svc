@@ -19,7 +19,7 @@ using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Config
+// Monitoring: expose OpenTelemetry metrics on /metrics (Prometheus scrape target).
 builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics =>
     {
@@ -30,6 +30,7 @@ builder.Services.AddOpenTelemetry()
             .AddPrometheusExporter();
     });
 
+// Config
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
 if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
@@ -332,8 +333,14 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Monitoring: /metrics is meant for the internal scrape network; keep it off in
+// Production unless METRICS_ENABLED=true (all services are publicly reachable).
+if (app.Configuration.GetValue("METRICS_ENABLED", !app.Environment.IsProduction()))
+{
+    app.MapPrometheusScrapingEndpoint();
+}
+
 // Routes
-app.MapPrometheusScrapingEndpoint();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
 app.MapAuthEndpoints();
