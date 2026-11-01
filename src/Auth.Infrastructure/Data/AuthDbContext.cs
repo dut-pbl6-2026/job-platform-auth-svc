@@ -9,6 +9,7 @@ public class AuthDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -44,6 +45,16 @@ public class AuthDbContext : DbContext
             e.HasIndex(x => x.UserId);
             e.HasIndex(x => x.ExpiresAt);
             e.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
+        });
+        b.Entity<AuditLog>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.ActorUserId);
+            e.HasIndex(x => new { x.TargetType, x.TargetId });
+            e.HasIndex(x => x.CreatedAt);
+            e.Property(x => x.Action).IsRequired().HasMaxLength(64);
+            e.Property(x => x.TargetType).IsRequired().HasMaxLength(64);
+            e.Property(x => x.Reason).HasMaxLength(500);
         });
     }
 }

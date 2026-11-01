@@ -95,6 +95,16 @@ public class AuthServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Register_AdminRole_Fails()
+    {
+        using var db = CreateDb();
+        var svc = CreateService(db);
+        var res = await svc.RegisterAsync(new RegisterRequest("admin@b.com", "SecureP@ss123", "Admin", "Admin"));
+        Assert.False(res.IsSuccess);
+        Assert.Equal("Invalid role", res.Error);
+    }
+
+    [Fact]
     public async Task Login_Success_ReturnsTokensAndPersistsRefresh()
     {
         using var db = CreateDb();

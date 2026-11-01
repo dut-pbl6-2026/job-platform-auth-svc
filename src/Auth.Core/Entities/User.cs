@@ -23,4 +23,6 @@ public class User : Entity
     }
     public void UpdatePassword(string hash) { PasswordHash = hash; Touch(); }
     public void RecordLogin() { LastLoginAt = DateTime.UtcNow; Touch(); }
+    public void Deactivate() { IsActive = false; Touch(); }
+    public void Activate() { IsActive = true; Touch(); }
 }
