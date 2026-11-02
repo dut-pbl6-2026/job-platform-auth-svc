@@ -83,6 +83,22 @@ public class AuthEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifeti
 
     public Task DisposeAsync() => Task.CompletedTask;
 
+    // ── Observability: /metrics is the Prometheus scrape target ────────────
+    [Fact]
+    public async Task Metrics_ReturnsPrometheusTextWithRuntimeAndHttpMetrics()
+    {
+        var client = _factory.CreateClient();
+        await client.GetAsync("/health");
+
+        var res = await client.GetAsync("/metrics");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("text/plain", res.Content.Headers.ContentType!.ToString());
+        var content = await res.Content.ReadAsStringAsync();
+        Assert.Contains("dotnet_gc_last_collection_heap_size_bytes", content);
+        Assert.Contains("http_server_request_duration_seconds_count", content);
+    }
+
     [Fact]
     public async Task Register_201_WithRelativeLocation()
     {
