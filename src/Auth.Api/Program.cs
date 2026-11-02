@@ -5,11 +5,13 @@ using System.Text;
 using System.Threading.RateLimiting;
 using System.Net.Http.Headers;
 using Auth.Api.Endpoints;
+using Auth.Api.Observability;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -18,6 +20,7 @@ using StackExchange.Redis;
 using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddObservability();
 
 // Monitoring: expose OpenTelemetry metrics on /metrics (Prometheus scrape target).
 builder.Services.AddOpenTelemetry()
@@ -281,6 +284,11 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // OpenAPI & Health
+// /health = static liveness (Render healthCheckPath). /health/ready = real dependency checks.
+var healthChecks = builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("postgres", tags: [HealthCheckTags.Ready]);
+if (!string.IsNullOrWhiteSpace(redisUrl))
+    healthChecks.AddCheck<RedisHealthCheck>("redis", tags: [HealthCheckTags.Ready]);
 builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -318,6 +326,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Pipeline
+app.UseObservability();
 app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
@@ -342,6 +351,11 @@ if (app.Configuration.GetValue("METRICS_ENABLED", !app.Environment.IsProduction(
 
 // Routes
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "auth" }));
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = r => r.Tags.Contains(HealthCheckTags.Ready),
+    ResponseWriter = HealthCheckResponseWriter.WriteAsync
+});
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
