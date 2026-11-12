@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 COPY src/Auth.Core/Auth.Core.csproj src/Auth.Core/
 COPY src/Auth.Infrastructure/Auth.Infrastructure.csproj src/Auth.Infrastructure/
