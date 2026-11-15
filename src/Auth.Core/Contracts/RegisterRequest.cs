@@ -37,6 +37,11 @@ public record UserMeDto(Guid Id, string Email, string FullName, string Role, Gui
 
 public record ForgotPasswordRequest([property: Required, NonWhitespace(ErrorMessage = "Email is required"), EmailAddress, MaxLength(256)] string Email);
 
+public record ResendVerificationRequest([property: Required, NonWhitespace(ErrorMessage = "Email is required"), EmailAddress, MaxLength(256)] string Email);
+
+// Same body for every email: the response must not reveal whether an account exists or is verified.
+public record ResendVerificationResponse(string Message);
+
 public record VerifyEmailRequest([property: Required, NonWhitespace(ErrorMessage = "Token is required")] string Token);
 
 public record ResetPasswordRequest(

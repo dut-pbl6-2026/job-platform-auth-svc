@@ -39,6 +39,7 @@ public class AuthDbContext : DbContext
             e.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
             e.Property(x => x.TokenFamily).IsRequired();
             e.Property(x => x.IsLongLived).HasDefaultValue(false);
+            e.Property(x => x.ConcurrencyStamp).IsConcurrencyToken();
         });
         b.Entity<PasswordResetToken>(e =>
         {

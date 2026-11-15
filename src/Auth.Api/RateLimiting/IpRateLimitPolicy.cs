@@ -12,4 +12,5 @@ public sealed record IpRateLimitPolicy(string Name, int PermitLimit, TimeSpan Wi
     public static readonly IpRateLimitPolicy Reset = new("reset", 10, TimeSpan.FromHours(1));
     public static readonly IpRateLimitPolicy Forgot = new("forgot", 5, TimeSpan.FromHours(1));
     public static readonly IpRateLimitPolicy Verify = new("verify", 10, TimeSpan.FromMinutes(15));
+    public static readonly IpRateLimitPolicy ResendVerification = new("resend-verification", 5, TimeSpan.FromHours(1));
 }
