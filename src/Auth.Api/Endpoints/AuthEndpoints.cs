@@ -68,6 +68,22 @@ public static class AuthEndpoints
         .ProducesProblem(400)
         .ProducesValidationProblem();
 
+        group.MapPost("/resend-verification", async (
+            ResendVerificationRequest req,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            await svc.ResendVerificationAsync(req, ct);
+            // Same 202 for unknown, verified and unverified emails: verification state is never revealed.
+            return Results.Accepted(value: new ResendVerificationResponse("If this email is awaiting verification, a new link was sent."));
+        })
+        .WithName("ResendVerification")
+        .WithSummary("Queue a new verification link for an unverified account (anti-enumeration, 24h TTL, 5/IP/h)")
+        .AddEndpointFilter<ValidationFilter<ResendVerificationRequest>>()
+        .WithMetadata(IpRateLimitPolicy.ResendVerification)
+        .Produces<ResendVerificationResponse>(202)
+        .ProducesValidationProblem();
+
         group.MapPost("/login", async (
             LoginRequest req,
             IAuthService svc,

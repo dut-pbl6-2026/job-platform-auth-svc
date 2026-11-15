@@ -33,7 +33,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## SRS mapping (AUTH-01)
 
-- `POST /api/auth/register` `202 Accepted` `{message}` for new and existing emails alike (no enumeration): new email → pending account + one-time 24h verification link (`POST /api/auth/verify-email`); existing email → notice to owner, no change. Login refuses unverified accounts with the same `401` as bad credentials. Pwd `8+1upper+1num`, `POST /api/auth/login` `200 {accessToken,refreshToken,user}` `401/403`, `POST /api/auth/refresh` 7/30d SHA256 rotation reuse→revoke family, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password` 15min TTL 5/IP/h anti-enumeration, `POST /api/auth/reset-password` revokes all tokens, `GET/POST /api/companies` linking `companyId` FK tax_code verified.
+- `POST /api/auth/register` `202 Accepted` `{message}` for new and existing emails alike (no enumeration): new email → pending account + one-time 24h verification link (`POST /api/auth/verify-email`); existing email → notice to owner, no change. Login refuses unverified accounts with the same `401` as bad credentials. Pwd `8+1upper+1num`, `POST /api/auth/login` `200 {accessToken,refreshToken,user}` `401/403`, `POST /api/auth/refresh` 7/30d SHA256 rotation reuse→revoke family, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password` 15min TTL 5/IP/h anti-enumeration, `POST /api/auth/resend-verification` `202 {message}` same body for unknown, verified and unverified emails; unverified gets a new 24h link through the outbox, `POST /api/auth/reset-password` revokes all tokens, `GET/POST /api/companies` linking `companyId` FK tax_code verified.
 - Gateway `GW-01` validates JWT then forwards `X-User-Id/Role`.
 - `GET /api/internal/users/{id}/email` (service-to-service, `INTERNAL_SERVICE_TOKEN` bearer, fail-closed 401, 404 unknown id). Not routed through the gateway.
 
@@ -57,7 +57,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## Security (SRS 6 `SEC-*`)
 
-`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained per IP (fixed window in Redis `REDIS_URL`, shared across replicas, 500 ms timeout, fail-open on store error, 429): login 10/15min, register 10/h, refresh 30/15min, reset 10/h, forgot-password 5/h`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
+`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained per IP (fixed window in Redis `REDIS_URL`, shared across replicas, 500 ms timeout, fail-open on store error, 429): login 10/15min, register 10/h, refresh 30/15min, reset 10/h, forgot-password 5/h, resend-verification 5/h`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
 
 ## 2026 best practice (NFR `MAINT`)
 

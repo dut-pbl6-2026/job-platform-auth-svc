@@ -12,6 +12,12 @@ public class RefreshToken : Entity
     public bool IsRevoked { get; private set; }
     public DateTime? RevokedAt { get; private set; }
 
+    /// <summary>
+    /// Optimistic concurrency token. Every change to the row replaces it, and EF adds it to the UPDATE's
+    /// WHERE clause, so of two concurrent rotations of the same token only the first save succeeds.
+    /// </summary>
+    public Guid ConcurrencyStamp { get; private set; } = Guid.NewGuid();
+
     private RefreshToken() { }
     public RefreshToken(Guid userId, string tokenHash, DateTime expiresAt, Guid? tokenFamily = null, bool isLongLived = false)
     {
@@ -23,5 +29,11 @@ public class RefreshToken : Entity
     }
     public bool IsExpired => DateTime.UtcNow >= ExpiresAt;
     public bool IsActive => !IsRevoked && !IsExpired;
-    public void Revoke() { IsRevoked = true; RevokedAt = DateTime.UtcNow; Touch(); }
+    public void Revoke()
+    {
+        IsRevoked = true;
+        RevokedAt = DateTime.UtcNow;
+        ConcurrencyStamp = Guid.NewGuid();
+        Touch();
+    }
 }

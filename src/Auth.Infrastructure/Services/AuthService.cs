@@ -125,6 +125,36 @@ public class AuthService : IAuthService
         return Result.Success();
     }
 
+    /// <summary>
+    /// Queues a fresh verification link for an account that is still unverified (for example after the
+    /// previous link expired). Succeeds for every well-formed email, so the caller cannot tell whether the
+    /// account exists or is already verified. The token is generated and hashed on every path, so the
+    /// known and unknown paths do the same hashing and lookup work. Only the unverified path writes.
+    /// </summary>
+    public async Task<Result> ResendVerificationAsync(ResendVerificationRequest request, CancellationToken ct = default)
+    {
+        var email = request.Email.Trim().ToLowerInvariant();
+        var plainToken = _jwt.GenerateRefreshToken();
+        var tokenHash = _jwt.HashToken(plainToken);
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (user == null || user.IsEmailVerified)
+        {
+            _logger.LogInformation("AUDIT AuthEvent=ResendVerification Email={Email} Queued=false", LogRedaction.MaskEmail(email));
+            return Result.Success();
+        }
+
+        var now = DateTime.UtcNow;
+        var expiresAt = now.Add(EmailVerificationToken.Lifetime);
+        var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
+        _db.EmailVerificationTokens.Add(new EmailVerificationToken(user.Id, tokenHash, expiresAt));
+        _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.EmailVerification, email, now, link, expiresAt));
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation("AUDIT AuthEvent=ResendVerification UserId={UserId} Queued=true", user.Id);
+        return Result.Success();
+    }
+
     public async Task<Result<AuthResponse>> LoginAsync(LoginRequest request, CancellationToken ct = default)
     {
         var email = request.Email.Trim().ToLowerInvariant();
@@ -186,7 +216,16 @@ public class AuthService : IAuthService
                 .Where(x => x.UserId == stored.UserId && x.TokenFamily == stored.TokenFamily && !x.IsRevoked)
                 .ToListAsync(ct);
             foreach (var t in familyTokens) t.Revoke();
-            await _db.SaveChangesAsync(ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                // A concurrent request changed the family first; the family is revoked either way.
+                _logger.LogWarning(ex, "AUDIT AuthEvent=RefreshFailed Reason=ConcurrentRevoke Family={Family} UserId={UserId}", stored.TokenFamily, stored.UserId);
+                return Result<AuthResponse>.Failure("Invalid refresh token");
+            }
             return Result<AuthResponse>.Failure("Refresh token revoked");
         }
 
@@ -207,7 +246,16 @@ public class AuthService : IAuthService
 
         var newRt = new RefreshToken(user.Id, newHash, expiresAt, stored.TokenFamily, stored.IsLongLived);
         _db.RefreshTokens.Add(newRt);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // Another request rotated this token first. The save rolled back, so only one successor exists.
+            _logger.LogWarning(ex, "AUDIT AuthEvent=RefreshFailed Reason=ConcurrentRotation Family={Family} UserId={UserId}", stored.TokenFamily, user.Id);
+            return Result<AuthResponse>.Failure("Invalid refresh token");
+        }
 
         var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId);
         _logger.LogInformation("AUDIT AuthEvent=RefreshSuccess Family={Family} UserId={UserId}", stored.TokenFamily, user.Id);
