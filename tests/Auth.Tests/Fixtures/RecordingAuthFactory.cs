@@ -25,7 +25,6 @@ namespace Auth.Tests.Fixtures;
 /// </summary>
 public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    public const string JwtSecret = "unit-test-signing-key-0123456789abcdef";
     /// <summary>Token notif-svc presents on <c>/api/internal/users/{id}/email</c> (AUTH_INTERNAL_TOKEN_FOR_NOTIF).</summary>
     public const string NotifInternalToken = "test-notif-internal-token-0123456789abcdef";
     /// <summary>Token auth-svc presents to job-svc and app-svc; must not open auth's own internal endpoints.</summary>
@@ -59,7 +58,7 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
-        builder.UseSetting("Jwt:Secret", JwtSecret);
+        builder.UseSetting(JwtSigningKeys.SigningKeyPemSetting, TestSigningKeys.PrivateKeyPemBase64);
         // Read when the host is built, which happens after InitializeAsync has started the container.
         builder.UseSetting("ConnectionStrings:AuthDb", ConnectionString);
         builder.UseSetting("WEB_URL", "http://localhost:5173");

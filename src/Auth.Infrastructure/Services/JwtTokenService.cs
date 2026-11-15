@@ -11,12 +11,17 @@ namespace Auth.Infrastructure.Services;
 public class JwtTokenService
 {
     private readonly JwtOptions _opt;
-    public JwtTokenService(IOptions<JwtOptions> opt) => _opt = opt.Value;
+    private readonly JwtSigningKeys _keys;
+
+    public JwtTokenService(IOptions<JwtOptions> opt, JwtSigningKeys keys)
+    {
+        _opt = opt.Value;
+        _keys = keys;
+    }
 
     public string GenerateAccessToken(Guid userId, string email, string role, Guid? companyId = null)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_opt.Secret));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var creds = new SigningCredentials(_keys.Signing, SecurityAlgorithms.RsaSha256);
         var claimsList = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, userId.ToString()),

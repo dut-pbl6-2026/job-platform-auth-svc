@@ -66,11 +66,10 @@ builder.Services.Configure<JwtOptions>(o =>
 });
 if (jwt.ExpiresMinutes <= 0)
     throw new InvalidOperationException("Jwt:ExpiresMinutes must be a positive number of minutes");
-if (builder.Environment.IsDevelopment() && string.IsNullOrEmpty(jwt.Secret))
-    jwt.Secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
-if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
-    throw new InvalidOperationException("Jwt:Secret must be at least 32 characters (set Jwt__Secret outside Development)");
-builder.Services.PostConfigure<JwtOptions>(o => o.Secret = jwt.Secret);
+// RS256 signing key (Jwt__SigningKeyPem). No default and no generated fallback, in every environment.
+// Validators fetch the public half from /.well-known/jwks.json; the private key never leaves this process.
+var signingKeys = JwtSigningKeys.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(signingKeys);
 
 if (string.IsNullOrWhiteSpace(conn))
     throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings__AuthDb");
@@ -245,7 +244,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = jwt.Issuer,
             ValidAudience = jwt.Audience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Secret)),
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
+            IssuerSigningKeys = signingKeys.VerificationKeys,
+            TryAllIssuerSigningKeys = false,
             ClockSkew = TimeSpan.FromSeconds(30)
         };
         o.Events = new JwtBearerEvents
@@ -351,6 +352,14 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
     ResponseWriter = HealthCheckResponseWriter.WriteAsync
 });
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
+
+// Token validation metadata for the other services. Public keys only; internal network, not routed by the gateway.
+app.MapGet("/.well-known/openid-configuration", (HttpContext context) => Results.Ok(new
+{
+    issuer = jwt.Issuer,
+    jwks_uri = $"{context.Request.Scheme}://{context.Request.Host}/.well-known/jwks.json",
+}));
+app.MapGet("/.well-known/jwks.json", () => Results.Ok(new { keys = signingKeys.JwksKeys() }));
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapInternalUserEndpoints();
