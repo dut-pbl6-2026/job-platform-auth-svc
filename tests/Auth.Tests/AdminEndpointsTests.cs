@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Auth.Core.Entities;
@@ -41,20 +42,32 @@ public class AdminEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifet
         return (admin.Id, user.Id);
     }
 
-    private static HttpRequestMessage AdminRequest(
+    private string AccessToken(Guid userId, string role) =>
+        _factory.Services.GetRequiredService<JwtTokenService>()
+            .GenerateAccessToken(userId, $"{role.ToLowerInvariant()}@test.com", role);
+
+    private HttpRequestMessage AdminRequest(
         HttpMethod method,
         string path,
-        Guid adminId,
+        Guid actorId,
         string role = "Admin",
         object? body = null)
     {
         var request = new HttpRequestMessage(method, path);
-        request.Headers.Add("X-User-Id", adminId.ToString());
-        request.Headers.Add("X-User-Role", role);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", AccessToken(actorId, role));
         if (body is not null)
             request.Content = JsonContent.Create(body);
         return request;
     }
+
+    public static TheoryData<string, string> AdminRoutes => new()
+    {
+        { "GET", "/api/admin/users" },
+        { "GET", "/api/admin/users/{id}" },
+        { "PATCH", "/api/admin/users/{id}/deactivate" },
+        { "PATCH", "/api/admin/users/{id}/activate" },
+        { "GET", "/api/admin/stats" },
+    };
 
     [Fact]
     public async Task GetUsers_Admin_Returns200_AndNoPasswordHash()
@@ -88,11 +101,25 @@ public class AdminEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifet
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
-    [Fact]
-    public async Task GetUsers_MissingUserId_Returns401()
+    [Theory]
+    [MemberData(nameof(AdminRoutes))]
+    public async Task AdminRoutes_WithoutToken_Returns401(string method, string route)
     {
         var client = _factory.CreateClient();
-        var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/users");
+        var request = new HttpRequestMessage(new HttpMethod(method), route.Replace("{id}", Guid.NewGuid().ToString()));
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(AdminRoutes))]
+    public async Task AdminRoutes_HeaderOnlyAdmin_Returns401(string method, string route)
+    {
+        var client = _factory.CreateClient();
+        var request = new HttpRequestMessage(new HttpMethod(method), route.Replace("{id}", Guid.NewGuid().ToString()));
+        request.Headers.Add("X-User-Id", Guid.NewGuid().ToString());
         request.Headers.Add("X-User-Role", "Admin");
 
         var response = await client.SendAsync(request);
@@ -100,14 +127,33 @@ public class AdminEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifet
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    [Theory]
+    [MemberData(nameof(AdminRoutes))]
+    public async Task AdminRoutes_NonAdminToken_Returns403(string method, string route)
+    {
+        var client = _factory.CreateClient();
+        var request = AdminRequest(
+            new HttpMethod(method),
+            route.Replace("{id}", Guid.NewGuid().ToString()),
+            Guid.NewGuid(),
+            role: "User",
+            body: new { });
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     [Fact]
-    public async Task GetUsers_SpoofedAdminHeaderForNonAdminActor_Returns403()
+    public async Task GetUsers_NonAdminTokenWithAdminHeaders_Returns403()
     {
         var (_, userId) = await SeedAsync();
         var client = _factory.CreateClient();
+        var request = AdminRequest(HttpMethod.Get, "/api/admin/users", userId, role: "User");
+        request.Headers.Add("X-User-Role", "Admin");
+        request.Headers.Add("X-User-Id", userId.ToString());
 
-        var response = await client.SendAsync(
-            AdminRequest(HttpMethod.Get, "/api/admin/users", userId, role: "Admin"));
+        var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }

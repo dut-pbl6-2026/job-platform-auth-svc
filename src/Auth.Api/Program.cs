@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
 using System.Net.Http.Headers;
@@ -11,6 +13,7 @@ using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -36,12 +39,11 @@ builder.Services.AddOpenTelemetry()
 // Config
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+if (builder.Environment.IsDevelopment() && string.IsNullOrEmpty(jwt.Secret))
+    jwt.Secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
-{
-    if (builder.Environment.IsProduction())
-        throw new InvalidOperationException("JWT Secret must be >=32 chars via JWT__Secret / Jwt:Secret (PORT-05 fail-fast)");
-    jwt.Secret = "dev-jwt-secret-change-me-32chars-min";
-}
+    throw new InvalidOperationException("Jwt:Secret must be at least 32 characters (set Jwt__Secret outside Development)");
+builder.Services.PostConfigure<JwtOptions>(o => o.Secret = jwt.Secret);
 
 // EF — Npgsql Connection Setup
 var conn = builder.Configuration.GetConnectionString("AuthDb")
@@ -59,14 +61,24 @@ if (string.IsNullOrWhiteSpace(conn))
 
 builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
 
-// ForwardedHeaders
-builder.Services.Configure<ForwardedHeadersOptions>(o =>
+// ForwardedHeaders: trusted only from configured proxies. With none configured the
+// middleware is not registered, because an empty KnownProxies list trusts every peer.
+var knownProxies = (builder.Configuration["ForwardedHeaders:KnownProxies"] ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .Select(static proxy => IPAddress.Parse(proxy))
+    .ToArray();
+if (knownProxies.Length > 0)
 {
-    o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    o.KnownIPNetworks.Clear();
-    o.KnownProxies.Clear();
-    o.ForwardLimit = 2; // Cloud Ingress + Gateway hops
-});
+    builder.Services.Configure<ForwardedHeadersOptions>(o =>
+    {
+        o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        o.KnownIPNetworks.Clear();
+        o.KnownProxies.Clear();
+        foreach (var proxy in knownProxies)
+            o.KnownProxies.Add(proxy);
+        o.ForwardLimit = 2; // Cloud Ingress + Gateway hops
+    });
+}
 
 // CORS
 var corsOriginsRaw = builder.Configuration["CORS_ORIGINS"]
@@ -246,7 +258,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             }
         };
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("AdminOnly", policy => policy.RequireAuthenticatedUser().RequireRole("Admin"));
 
 // Rate Limiting (Fine-Grained)
 builder.Services.AddRateLimiter(options =>
@@ -266,21 +279,15 @@ builder.Services.AddRateLimiter(options =>
         {
             status = 429,
             title = "Too Many Requests",
-            detail = "Forgot password request limit exceeded. Please try again later."
+            detail = "Too many requests. Please try again later."
         }, cancellationToken: token);
     };
 
-    options.AddPolicy("forgot", httpContext =>
-    {
-        return RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 5,
-                Window = TimeSpan.FromHours(1),
-                QueueLimit = 0
-            });
-    });
+    AddIpFixedWindowPolicy(options, "login", permitLimit: 10, window: TimeSpan.FromMinutes(15));
+    AddIpFixedWindowPolicy(options, "register", permitLimit: 10, window: TimeSpan.FromHours(1));
+    AddIpFixedWindowPolicy(options, "refresh", permitLimit: 30, window: TimeSpan.FromMinutes(15));
+    AddIpFixedWindowPolicy(options, "reset", permitLimit: 10, window: TimeSpan.FromHours(1));
+    AddIpFixedWindowPolicy(options, "forgot", permitLimit: 5, window: TimeSpan.FromHours(1));
 });
 
 // OpenAPI & Health
@@ -335,7 +342,8 @@ if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
     app.UseSwaggerUI();
 }
 
-app.UseForwardedHeaders();
+if (knownProxies.Length > 0)
+    app.UseForwardedHeaders();
 app.UseCors("Default");
 app.UseRateLimiter();
 
@@ -361,6 +369,16 @@ app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 
 app.Run();
+
+static void AddIpFixedWindowPolicy(RateLimiterOptions options, string name, int permitLimit, TimeSpan window) =>
+    options.AddPolicy(name, httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = permitLimit,
+            Window = window,
+            QueueLimit = 0
+        }));
 
 static long GetIssuedAt(ClaimsPrincipal principal)
 {

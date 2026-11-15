@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Auth.Core.Contracts;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
@@ -9,10 +10,10 @@ public static class AdminEndpoints
 {
     public static IEndpointRouteBuilder MapAdminEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/admin").WithTags("Admin");
+        var group = app.MapGroup("/api/admin").WithTags("Admin").RequireAuthorization("AdminOnly");
 
         group.MapGet("/users", async (
-            HttpContext ctx,
+            ClaimsPrincipal user,
             IAdminService svc,
             int? page,
             int? size,
@@ -21,8 +22,7 @@ public static class AdminEndpoints
             string? search,
             CancellationToken ct) =>
         {
-            var denied = EnsureAdmin(ctx, out var adminId);
-            if (denied is not null) return denied;
+            if (!TryGetActorId(user, out var adminId)) return Results.Unauthorized();
 
             var result = await svc.GetUsersAsync(adminId, page ?? 1, size ?? 20, role, isActive, search, ct);
             if (!result.IsSuccess)
@@ -37,13 +37,12 @@ public static class AdminEndpoints
         .ProducesProblem(403);
 
         group.MapGet("/users/{id:guid}", async (
-            HttpContext ctx,
+            ClaimsPrincipal user,
             Guid id,
             IAdminService svc,
             CancellationToken ct) =>
         {
-            var denied = EnsureAdmin(ctx, out var adminId);
-            if (denied is not null) return denied;
+            if (!TryGetActorId(user, out var adminId)) return Results.Unauthorized();
 
             var result = await svc.GetUserAsync(adminId, id, ct);
             if (!result.IsSuccess)
@@ -59,14 +58,13 @@ public static class AdminEndpoints
         .ProducesProblem(404);
 
         group.MapPatch("/users/{id:guid}/deactivate", async (
-            HttpContext ctx,
+            ClaimsPrincipal user,
             Guid id,
             DeactivateUserRequest req,
             IAdminService svc,
             CancellationToken ct) =>
         {
-            var denied = EnsureAdmin(ctx, out var adminId);
-            if (denied is not null) return denied;
+            if (!TryGetActorId(user, out var adminId)) return Results.Unauthorized();
 
             var result = await svc.DeactivateUserAsync(adminId, id, req.Reason, ct);
             return result.IsSuccess ? Results.NoContent() : MapFailure(result.Error);
@@ -82,13 +80,12 @@ public static class AdminEndpoints
         .ProducesProblem(422);
 
         group.MapPatch("/users/{id:guid}/activate", async (
-            HttpContext ctx,
+            ClaimsPrincipal user,
             Guid id,
             IAdminService svc,
             CancellationToken ct) =>
         {
-            var denied = EnsureAdmin(ctx, out var adminId);
-            if (denied is not null) return denied;
+            if (!TryGetActorId(user, out var adminId)) return Results.Unauthorized();
 
             var result = await svc.ActivateUserAsync(adminId, id, ct);
             return result.IsSuccess ? Results.NoContent() : MapFailure(result.Error);
@@ -101,15 +98,11 @@ public static class AdminEndpoints
         .ProducesProblem(404);
 
         group.MapGet("/stats", async (
-            HttpContext ctx,
             AuthDbContext db,
             IJobServiceClient jobClient,
             IAppServiceClient appClient,
             CancellationToken ct) =>
         {
-            var denied = EnsureAdmin(ctx, out _);
-            if (denied is not null) return denied;
-
             var jobTask = jobClient.GetStatsOrNullAsync(ct);
             var appTask = appClient.GetStatsOrNullAsync(ct);
             await Task.WhenAll(jobTask, appTask);
@@ -166,26 +159,8 @@ public static class AdminEndpoints
                 Rejected: stats.Rejected,
                 NewThisMonth: stats.NewThisMonth);
 
-    private static IResult? EnsureAdmin(HttpContext ctx, out Guid adminId)
-    {
-        adminId = Guid.Empty;
-
-        if (!string.Equals(
-                ctx.Request.Headers["X-User-Role"].ToString(),
-                "Admin",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return Results.Problem(
-                statusCode: StatusCodes.Status403Forbidden,
-                title: "Forbidden",
-                detail: "Admin role required");
-        }
-
-        if (!Guid.TryParse(ctx.Request.Headers["X-User-Id"].ToString(), out adminId))
-            return Results.Unauthorized();
-
-        return null;
-    }
+    private static bool TryGetActorId(ClaimsPrincipal user, out Guid actorId) =>
+        Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out actorId);
 
     private static IResult MapFailure(string? error)
     {

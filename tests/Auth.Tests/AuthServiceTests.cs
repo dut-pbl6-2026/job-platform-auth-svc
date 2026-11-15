@@ -28,7 +28,7 @@ public class AuthServiceTests : IAsyncLifetime
 
     private static JwtOptions JwtOptions => new()
     {
-        Secret = "dev-jwt-secret-change-me-32chars-min",
+        Secret = "unit-test-signing-key-0123456789abcdef",
         Issuer = "job-platform",
         Audience = "job-platform",
         ExpiresMinutes = 60

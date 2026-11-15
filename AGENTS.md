@@ -38,7 +38,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## JWT (SharedKernel JwtOptions)
 
-`shared/JwtOptions.cs: SectionName=Jwt Secret≥32 Issuer=Audience=job-platform ExpiresMinutes=60`. `JwtTokenService.cs`: `HmacSha256` claims `sub`=`NameIdentifier`+`Email`+`Role`+`Jti`, expires `AddMinutes(60)`, `RandomNumberGenerator 64B Base64` for refresh, `SHA256 Hex Lower` for `TokenHash` (128 char). Fallback `dev-jwt-secret-change-me-32chars-min` **dev only**. Validate `ValidateIssuer/Audience/Lifetime/SigningKey ClockSkew=Zero` in `Program.cs`.
+`shared/JwtOptions.cs: SectionName=Jwt Secret≥32 Issuer=Audience=job-platform ExpiresMinutes=60`. `JwtTokenService.cs`: `HmacSha256` claims `sub`=`NameIdentifier`+`Email`+`Role`+`Jti`, expires `AddMinutes(60)`, `RandomNumberGenerator 64B Base64` for refresh, `SHA256 Hex Lower` for `TokenHash` (128 char). No committed secret: `Jwt__Secret` must be set outside Development (startup fails if missing or <32 chars); Development generates a random per-process key when unset. Validate `ValidateIssuer/Audience/Lifetime/SigningKey ClockSkew=Zero` in `Program.cs`.
 
 ## Data — EF Core (NFR `6-nfr.md:SEC-03,MAINT`)
 
@@ -56,7 +56,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## Security (SRS 6 `SEC-*`)
 
-`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained only forgot-password 5/h per IP (fixed window, 429)`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
+`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained per IP (fixed window, 429): login 10/15min, register 10/h, refresh 30/15min, reset 10/h, forgot-password 5/h`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
 
 ## 2026 best practice (NFR `MAINT`)
 

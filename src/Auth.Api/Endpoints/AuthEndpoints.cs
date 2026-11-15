@@ -52,6 +52,7 @@ public static class AuthEndpoints
         .WithName("Register")
         .WithSummary("Register new user")
         .AddEndpointFilter<ValidationFilter<RegisterRequest>>()
+        .RequireRateLimiting("register")
         .Produces<RegisterResponse>(201)
         .ProducesValidationProblem()
         .ProducesProblem(409);
@@ -76,6 +77,7 @@ public static class AuthEndpoints
         .WithName("Login")
         .WithSummary("Login and issue JWT")
         .AddEndpointFilter<ValidationFilter<LoginRequest>>()
+        .RequireRateLimiting("login")
         .Produces<AuthResponse>(200)
         .Produces(401)
         .ProducesProblem(403);
@@ -102,6 +104,7 @@ public static class AuthEndpoints
         .WithName("Refresh")
         .WithSummary("Rotate refresh token (family-scoped reuse detection)")
         .AddEndpointFilter<ValidationFilter<RefreshRequest>>()
+        .RequireRateLimiting("refresh")
         .Produces<AuthResponse>(200)
         .Produces(401);
 
@@ -186,6 +189,7 @@ public static class AuthEndpoints
         .WithName("ResetPassword")
         .WithSummary("Reset password (single-use 15m, revokes all refresh tokens)")
         .AddEndpointFilter<ValidationFilter<ResetPasswordRequest>>()
+        .RequireRateLimiting("reset")
         .Produces(200)
         .Produces(401)
         .ProducesValidationProblem();
