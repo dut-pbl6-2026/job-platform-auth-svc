@@ -272,20 +272,60 @@ public class AuthService : IAuthService
             if (stored != null && !stored.IsRevoked)
             {
                 stored.Revoke();
-                await _db.SaveChangesAsync(ct);
-                _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=Single", userId);
+                try
+                {
+                    await _db.SaveChangesAsync(ct);
+                    _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=Single", userId);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // A concurrent logout or refresh revoked this row first. Only Revoke() changes the row, so it is
+                    // revoked now: the same idempotent success as a token that was already revoked.
+                    _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=Single Reason=ConcurrentRevoke", userId);
+                }
             }
         }
         else
         {
-            var actives = await _db.RefreshTokens.Where(x => x.UserId == userId && !x.IsRevoked && x.ExpiresAt > DateTime.UtcNow).ToListAsync(ct);
-            foreach (var t in actives) t.Revoke();
-            if (actives.Count > 0) await _db.SaveChangesAsync(ct);
+            var revoked = await RevokeActiveRefreshTokensAsync(userId, ct);
+            if (revoked is null)
+                return Result.Failure("Unable to revoke sessions");
+
             // Access tokens are stateless JWTs: revoke them too, or they stay valid until they expire.
             await _revocationStore.RevokeUserTokensAsync(userId, DateTimeOffset.UtcNow, ct);
-            _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=All Count={Count}", userId, actives.Count);
+            _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=All Count={Count}", userId, revoked);
         }
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Revokes every still-valid refresh token of the user in one save. A conflict means a concurrent refresh
+    /// or logout changed one of those rows; the whole save rolled back, so the rows are reloaded and the
+    /// revocation runs once more. Returns null when the second attempt also conflicts (nothing was revoked).
+    /// </summary>
+    private async Task<int?> RevokeActiveRefreshTokensAsync(Guid userId, CancellationToken ct)
+    {
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            var actives = await _db.RefreshTokens
+                .Where(x => x.UserId == userId && !x.IsRevoked && x.ExpiresAt > DateTime.UtcNow)
+                .ToListAsync(ct);
+            foreach (var t in actives) t.Revoke();
+            if (actives.Count == 0)
+                return 0;
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return actives.Count;
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                _logger.LogWarning(ex, "AUDIT AuthEvent=Logout UserId={UserId} Mode=All Reason=ConcurrentChange Attempt={Attempt}", userId, attempt);
+                _db.ChangeTracker.Clear();
+            }
+        }
+        return null;
     }
 
     public async Task<Result<UserMeDto>> GetMeAsync(Guid userId, CancellationToken ct = default)
@@ -326,6 +366,17 @@ public class AuthService : IAuthService
         if (!PasswordPolicy.IsStrong(request.NewPassword))
             return Result.Failure("Password must be " + PasswordPolicy.Description);
 
+        // The password change, the token use and the session revocations are one SaveChanges, so they commit or roll
+        // back together. A concurrent refresh can make that save conflict; the reset then never happened, so it runs
+        // once more against fresh rows.
+        var result = await TryResetPasswordAsync(request, ct);
+        result ??= await TryResetPasswordAsync(request, ct);
+        return result ?? Result.Failure("Password reset failed, please try again");
+    }
+
+    /// <summary>Returns null when the save conflicted with a concurrent refresh or logout and rolled back entirely.</summary>
+    private async Task<Result?> TryResetPasswordAsync(ResetPasswordRequest request, CancellationToken ct)
+    {
         var hash = _jwt.HashToken(request.Token);
         var stored = await _db.PasswordResetTokens.FirstOrDefaultAsync(x => x.TokenHash == hash, ct);
         if (stored == null || stored.IsUsed || stored.IsExpired)
@@ -343,7 +394,17 @@ public class AuthService : IAuthService
         var actives = await _db.RefreshTokens.Where(x => x.UserId == user.Id && !x.IsRevoked).ToListAsync(ct);
         foreach (var t in actives) t.Revoke();
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            _logger.LogWarning(ex, "AUDIT AuthEvent=ResetPasswordRetry UserId={UserId} Reason=ConcurrentChange", user.Id);
+            _db.ChangeTracker.Clear();
+            return null;
+        }
+
         // Access tokens issued before the reset must stop working now, not at their expiry.
         await _revocationStore.RevokeUserTokensAsync(user.Id, DateTimeOffset.UtcNow, ct);
         _logger.LogInformation("AUDIT AuthEvent=ResetPasswordSuccess UserId={UserId} RevokedCount={Count}", user.Id, actives.Count);

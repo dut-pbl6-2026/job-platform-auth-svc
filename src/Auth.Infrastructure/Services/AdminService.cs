@@ -165,7 +165,17 @@ public class AdminService : IAdminService
             normalizedReason.Value,
             metadata));
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // A concurrent refresh rotated one of the tokens. The save rolled back, so the user is still active
+            // and nothing was revoked here: the same failure as a failed session revocation, and the admin can retry.
+            _logger.LogWarning(ex, "Deactivation of user {TargetId} rolled back: concurrent refresh-token change", target.Id);
+            return Result.Failure("Unable to revoke user sessions");
+        }
         _logger.LogInformation(
             "Admin {AdminId} {Action} user {TargetId}",
             actorUserId,
