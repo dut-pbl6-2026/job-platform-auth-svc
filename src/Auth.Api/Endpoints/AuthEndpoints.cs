@@ -32,10 +32,16 @@ public static class AuthEndpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["Password"] = [result.Error] });
                 if (result.Error == "Invalid role")
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["Role"] = [result.Error] });
-                if (result.Error == "Invalid companyId")
-                    return Results.Problem(statusCode: 422, detail: result.Error);
-                if (result.Error == "companyId required for Recruiter")
-                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["CompanyId"] = [result.Error] });
+                if (result.Error == InviteCodeErrors.Invalid)
+                    return Results.Problem(
+                        statusCode: 422,
+                        title: "Invalid invite code",
+                        detail: result.Error,
+                        extensions: new Dictionary<string, object?> { ["errorCode"] = InviteCodeErrors.ErrorCode });
+                if (result.Error == InviteCodeErrors.Unavailable)
+                    return Results.Problem(statusCode: 503, title: "Service unavailable", detail: result.Error);
+                if (result.Error == InviteCodeErrors.Missing)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["InviteCode"] = [result.Error] });
                 return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
             }
 

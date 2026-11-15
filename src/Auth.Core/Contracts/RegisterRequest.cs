@@ -13,7 +13,8 @@ public record RegisterRequest(
     [property: Required, NonWhitespace(ErrorMessage = "FullName is required"), MaxLength(128)] string FullName,
     [property: MaxLength(32)] string? Role = "User",
     Guid? CompanyId = null,
-    string? CompanyName = null
+    string? CompanyName = null,
+    [property: MaxLength(64)] string? InviteCode = null
 );
 
 // Deliberately carries no user id: registration must not reveal whether the email is taken.

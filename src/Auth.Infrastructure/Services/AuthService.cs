@@ -16,11 +16,11 @@ public class AuthService : IAuthService
     private readonly IPasswordHasher _hasher;
     private readonly JwtTokenService _jwt;
     private readonly ILogger<AuthService> _logger;
-    private readonly ICompanyValidationClient? _companyClient;
+    private readonly IInviteCodeClient? _inviteCodes;
     private readonly ITokenRevocationStore _revocationStore;
     private readonly IConfiguration _config;
 
-    public AuthService(AuthDbContext db, IPasswordHasher hasher, JwtTokenService jwt, ILogger<AuthService> logger, IConfiguration config, ITokenRevocationStore revocationStore, ICompanyValidationClient? companyClient = null)
+    public AuthService(AuthDbContext db, IPasswordHasher hasher, JwtTokenService jwt, ILogger<AuthService> logger, IConfiguration config, ITokenRevocationStore revocationStore, IInviteCodeClient? inviteCodes = null)
     {
         _db = db;
         _hasher = hasher;
@@ -28,7 +28,43 @@ public class AuthService : IAuthService
         _logger = logger;
         _config = config;
         _revocationStore = revocationStore;
-        _companyClient = companyClient;
+        _inviteCodes = inviteCodes;
+    }
+
+    /// <summary>
+    /// Returns null when the code is usable. Fails closed: an unreachable job-svc refuses the registration.
+    /// </summary>
+    private async Task<Result?> CheckInviteCodeAsync(string code, string email, CancellationToken ct)
+    {
+        if (_inviteCodes is null)
+            return Result.Failure(InviteCodeErrors.Unavailable);
+        try
+        {
+            if (await _inviteCodes.CheckAsync(code, ct) is not null)
+                return null;
+        }
+        catch (InviteCodeServiceUnavailableException ex)
+        {
+            _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterInviteUnavailable Email={Email}", LogRedaction.MaskEmail(email));
+            return Result.Failure(InviteCodeErrors.Unavailable);
+        }
+        _logger.LogWarning("AUDIT AuthEvent=RegisterInviteRejected Email={Email}", LogRedaction.MaskEmail(email));
+        return Result.Failure(InviteCodeErrors.Invalid);
+    }
+
+    private async Task ReleaseInviteCodeAsync(Guid inviteCodeId, CancellationToken ct)
+    {
+        if (_inviteCodes is null)
+            return;
+        try
+        {
+            if (!await _inviteCodes.ReleaseAsync(inviteCodeId, ct))
+                _logger.LogError("AUDIT AuthEvent=InviteCodeReleaseFailed InviteCodeId={InviteCodeId}", inviteCodeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AUDIT AuthEvent=InviteCodeReleaseFailed InviteCodeId={InviteCodeId}", inviteCodeId);
+        }
     }
 
     /// <summary>
@@ -50,14 +86,18 @@ public class AuthService : IAuthService
         if (!PasswordPolicy.IsStrong(request.Password))
             return Result.Failure("Password must be " + PasswordPolicy.Description);
 
-        // SRS AUTH-01-06: Recruiter requires companyId (FK → Company)
-        if (role == "Recruiter" && !request.CompanyId.HasValue)
-            return Result.Failure("companyId required for Recruiter");
-        if (request.CompanyId.HasValue && _companyClient != null)
+        // SRS AUTH-01-06 / AUTH-01-09: Recruiter registration needs a valid invite code; the Company comes from
+        // the code and client-sent companyId/companyName are ignored. The check runs before the duplicate lookup:
+        // its outcome depends only on the code, so it reveals nothing about existing emails.
+        string? inviteCode = null;
+        if (role == "Recruiter")
         {
-            var exists = await _companyClient.ExistsAsync(request.CompanyId.Value, ct);
-            if (!exists)
-                return Result.Failure("Invalid companyId");
+            inviteCode = request.InviteCode?.Trim();
+            if (string.IsNullOrWhiteSpace(inviteCode))
+                return Result.Failure(InviteCodeErrors.Missing);
+            var checkFailure = await CheckInviteCodeAsync(inviteCode, email, ct);
+            if (checkFailure is not null)
+                return checkFailure;
         }
 
         // Hash before the lookup on BOTH paths, so a duplicate costs the same as a new registration.
@@ -72,7 +112,27 @@ public class AuthService : IAuthService
             return Result.Success();
         }
 
-        var companyId = role == "Recruiter" ? request.CompanyId : null;
+        // Redeem after the duplicate check, so a duplicate registration never consumes a code.
+        // Redeem is atomic in job-svc; a code used since the check fails here with the same error.
+        InviteCodeRedeemResult? redemption = null;
+        if (role == "Recruiter")
+        {
+            try
+            {
+                redemption = _inviteCodes is null
+                    ? null
+                    : await _inviteCodes.RedeemAsync(inviteCode!, ct);
+            }
+            catch (InviteCodeServiceUnavailableException ex)
+            {
+                _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterInviteUnavailable Email={Email}", LogRedaction.MaskEmail(email));
+                return Result.Failure(InviteCodeErrors.Unavailable);
+            }
+            if (redemption is null)
+                return Result.Failure(InviteCodeErrors.Invalid);
+        }
+
+        var companyId = redemption?.CompanyId;
         var user = new User(email, hash, request.FullName.Trim(), role, companyId);
         var plainToken = _jwt.GenerateRefreshToken();
         var tokenHash = _jwt.HashToken(plainToken);
@@ -92,9 +152,18 @@ public class AuthService : IAuthService
             // The failed save rolled back the user, token and link row together, so none of them is written.
             _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterDuplicate Email={Email} Reason=Race", LogRedaction.MaskEmail(email));
             _db.ChangeTracker.Clear();
+            if (redemption is not null)
+                await ReleaseInviteCodeAsync(redemption.InviteCodeId, ct);
             _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.DuplicateRegistrationNotice, email, DateTime.UtcNow));
             await _db.SaveChangesAsync(ct);
             return Result.Success();
+        }
+        catch (Exception)
+        {
+            // Creation failed after the code was redeemed: give the code back so the creator's code is not burned.
+            if (redemption is not null)
+                await ReleaseInviteCodeAsync(redemption.InviteCodeId, ct);
+            throw;
         }
 
         _logger.LogInformation("AUDIT AuthEvent=RegisterPending UserId={UserId} Role={Role} CompanyId={CompanyId}", user.Id, role, companyId);
