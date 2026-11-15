@@ -6,7 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Auth.Core/Auth.Core.csproj" />
-    <PackageReference Include="JobPlatform.SharedKernel" Version="[0.3.1]" />
+    <PackageReference Include="JobPlatform.SharedKernel" Version="[0.4.0]" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />

@@ -9,16 +9,12 @@ public class AuthSharedContractTests
     {
         var options = new JwtOptions
         {
-            Secret = "contract-test-secret-at-least-32-characters",
             Issuer = "auth-contract-issuer",
             Audience = "auth-contract-audience",
             ExpiresMinutes = 60
         };
 
         Assert.Equal("Jwt", JwtOptions.SectionName);
-        Assert.Equal(
-            "contract-test-secret-at-least-32-characters",
-            options.Secret);
         Assert.Equal("auth-contract-issuer", options.Issuer);
         Assert.Equal("auth-contract-audience", options.Audience);
         Assert.Equal(60, options.ExpiresMinutes);
