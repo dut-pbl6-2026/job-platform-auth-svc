@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Auth.Tests;
 
-// Needs the shared Postgres container: a host that starts runs its startup migrations.
+// Needs the shared Postgres container: the fixture applies migrations before the host starts.
 [Collection(PostgresCollection.Name)]
 public sealed class DevelopmentEmailStartupTests(PostgresFixture postgres)
 {

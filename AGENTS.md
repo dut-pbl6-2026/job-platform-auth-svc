@@ -22,7 +22,7 @@ Agent uses `mise exec -- dotnet ...` / `mise exec -- infisical ...` due to non-i
 ## Architecture — clean Api/Core/Infrastructure
 
 ```
-src/Auth.Api            → Web API (Program.cs JWT Bearer + Swagger + /health + auto-migrate)
+src/Auth.Api            → Web API (Program.cs JWT Bearer + Swagger + /health; `migrate` and `bootstrap-admin` one-off commands)
 src/Auth.Core           → Domain (User, RefreshToken, PasswordResetToken : Entity)
 src/Auth.Infrastructure → Data (AuthDbContext Npgsql, Migrations) + Services (JwtTokenService, PasswordHasherService)
 tests/Auth.Tests        → xunit
@@ -44,7 +44,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 ## Data — EF Core (NFR `6-nfr.md:SEC-03,MAINT`)
 
 - `AuthDbContext: DbSet<User,RefreshToken,PasswordResetToken>` `UseNpgsql(ConnectionStrings:AuthDb / DATABASE_URL_AUTH)`. Fluent: `User Email unique 256 required FullName 128 Role 32 default User IsActive`, `RefreshToken TokenHash 128 required UserId FK ExpiresAt IsRevoked`, `PasswordResetToken same`.
-- Migrations `src/Auth.Infrastructure/Data/Migrations/` (Init, FixTokenHash, snapshot) — `mise run ef-check` (`dotnet ef migrations has-pending-model-changes`) in PR+CI, auto-migrate on startup with `ILogger` (`Program.cs: Migrate()`).
+- Migrations `src/Auth.Infrastructure/Data/Migrations/` (Init, FixTokenHash, snapshot) — `mise run ef-check` (`dotnet ef migrations has-pending-model-changes`) in PR+CI, schema migration is a separate deploy step: `dotnet Auth.Api.dll migrate` (`Bootstrap/MigrateCommand.cs`, compose service `auth-migrate`). The web host never migrates on startup.
 - `NFR REL-01` retry 3 exp backoff, pooling `MaxPoolSize=20` via infra `env`.
 
 ## HttpClient — outbound rules
