@@ -16,18 +16,16 @@ public class AuthService : IAuthService
     private readonly IPasswordHasher _hasher;
     private readonly JwtTokenService _jwt;
     private readonly ILogger<AuthService> _logger;
-    private readonly IEmailSender _emailSender;
     private readonly ICompanyValidationClient? _companyClient;
     private readonly ITokenRevocationStore _revocationStore;
     private readonly IConfiguration _config;
 
-    public AuthService(AuthDbContext db, IPasswordHasher hasher, JwtTokenService jwt, ILogger<AuthService> logger, IEmailSender emailSender, IConfiguration config, ITokenRevocationStore revocationStore, ICompanyValidationClient? companyClient = null)
+    public AuthService(AuthDbContext db, IPasswordHasher hasher, JwtTokenService jwt, ILogger<AuthService> logger, IConfiguration config, ITokenRevocationStore revocationStore, ICompanyValidationClient? companyClient = null)
     {
         _db = db;
         _hasher = hasher;
         _jwt = jwt;
         _logger = logger;
-        _emailSender = emailSender;
         _config = config;
         _revocationStore = revocationStore;
         _companyClient = companyClient;
@@ -37,7 +35,8 @@ public class AuthService : IAuthService
     /// Succeeds for any well-formed request, whether or not the email is already registered, so
     /// the response cannot be used to enumerate accounts. A new address gets a pending account and
     /// a verification link; an existing address gets a notice to its owner and no account change.
-    /// Both paths do the same work: password hash, lookup, one email send.
+    /// Both paths do the same work: password hash, lookup, one save. The email is an outbox row
+    /// written in that same save, so it is sent later by the worker and the response never waits for SMTP.
     /// </summary>
     public async Task<Result> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
     {
@@ -68,7 +67,8 @@ public class AuthService : IAuthService
         if (existingUser)
         {
             _logger.LogWarning("AUDIT AuthEvent=RegisterDuplicate Email={Email}", LogRedaction.MaskEmail(email));
-            await _emailSender.SendDuplicateRegistrationNoticeAsync(email, ct);
+            _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.DuplicateRegistrationNotice, email, DateTime.UtcNow));
+            await _db.SaveChangesAsync(ct);
             return Result.Success();
         }
 
@@ -76,8 +76,12 @@ public class AuthService : IAuthService
         var user = new User(email, hash, request.FullName.Trim(), role, companyId);
         var plainToken = _jwt.GenerateRefreshToken();
         var tokenHash = _jwt.HashToken(plainToken);
+        var now = DateTime.UtcNow;
+        var verificationExpiresAt = now.Add(EmailVerificationToken.Lifetime);
+        var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
         _db.Users.Add(user);
-        _db.EmailVerificationTokens.Add(new EmailVerificationToken(user.Id, tokenHash, DateTime.UtcNow.Add(EmailVerificationToken.Lifetime)));
+        _db.EmailVerificationTokens.Add(new EmailVerificationToken(user.Id, tokenHash, verificationExpiresAt));
+        _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.EmailVerification, email, now, link, verificationExpiresAt));
         try
         {
             await _db.SaveChangesAsync(ct);
@@ -85,13 +89,14 @@ public class AuthService : IAuthService
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
             // Lost a race with a concurrent registration for the same address: same response as the duplicate path.
+            // The failed save rolled back the user, token and link row together, so none of them is written.
             _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterDuplicate Email={Email} Reason=Race", LogRedaction.MaskEmail(email));
-            await _emailSender.SendDuplicateRegistrationNoticeAsync(email, ct);
+            _db.ChangeTracker.Clear();
+            _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.DuplicateRegistrationNotice, email, DateTime.UtcNow));
+            await _db.SaveChangesAsync(ct);
             return Result.Success();
         }
 
-        var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
-        await _emailSender.SendEmailVerificationAsync(email, link, ct);
         _logger.LogInformation("AUDIT AuthEvent=RegisterPending UserId={UserId} Role={Role} CompanyId={CompanyId}", user.Id, role, companyId);
         return Result.Success();
     }
@@ -250,7 +255,8 @@ public class AuthService : IAuthService
         {
             // No account: send a notice instead of a reset link, so the same email send happens either way.
             _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=false", LogRedaction.MaskEmail(email));
-            await _emailSender.SendUnknownAccountPasswordResetNoticeAsync(email, ct);
+            _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.UnknownAccountResetNotice, email, DateTime.UtcNow));
+            await _db.SaveChangesAsync(ct);
             return Result.Success();
         }
 
@@ -258,11 +264,11 @@ public class AuthService : IAuthService
         var hash = _jwt.HashToken(plainToken);
         var expiresAt = DateTime.UtcNow.AddMinutes(15);
         var prt = new PasswordResetToken(user.Id, hash, expiresAt);
+        var link = $"{WebUrl()}/reset-password?token={Uri.EscapeDataString(plainToken)}";
         _db.PasswordResetTokens.Add(prt);
+        _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.PasswordReset, email, DateTime.UtcNow, link, expiresAt));
         await _db.SaveChangesAsync(ct);
 
-        var link = $"{WebUrl()}/reset-password?token={Uri.EscapeDataString(plainToken)}";
-        await _emailSender.SendPasswordResetAsync(email, link, ct);
         _logger.LogInformation("AUDIT AuthEvent=ForgotPassword UserId={UserId} Found=true", user.Id);
         return Result.Success();
     }

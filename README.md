@@ -74,6 +74,8 @@ No connection string or secret is committed. Required environment variables:
 - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`: outgoing mail for verification, password-reset and notice emails. Startup fails outside Development when any of the four is missing (the message lists the missing names, never the values). Optional: `SMTP_PORT` (default `587`), `SMTP_SSL` (default `true`, STARTTLS).
   - Production uses a Google account: `SMTP_HOST=smtp.gmail.com`, `SMTP_PASS` is a Google App Password (2-Step Verification on), and `SMTP_FROM` must equal `SMTP_USER` because Gmail rewrites the From address.
 - `EMAIL_SENDER`: Development only. `log` writes each auth email, including its one-time link, to the console log and sends nothing (explicit opt-in). `smtp` forces SMTP. When unset, Development uses SMTP if `SMTP_HOST` is set and otherwise fails at startup, so emails are never silently dropped. `log` outside Development fails startup.
+- Auth emails go through a durable outbox (`EmailOutboxMessages` table). The registration or reset request writes its row in the same transaction as the account change, then returns without waiting for SMTP. A background worker sends due rows every 5 s. Failed sends retry with exponential backoff (1, 2, 4, 8, 16, then 30 minutes) and are given up after 8 failed attempts, with an Error log that names the row id. Rows are claimed with a lease, so several replicas can run the worker. Delivery is at-least-once: a crash after SMTP accepts a message but before the row is marked sent can send one duplicate.
+- `ForwardedHeaders__KnownNetworks`: the network the gateway runs in, comma-separated CIDRs or addresses (for example `10.0.0.0/8`). Only that peer may set `X-Forwarded-For`, so per-IP rate limits see the real client. **Required in Production.** Startup fails when it is empty or contains `0.0.0.0/0` or `::/0`. Use the gateway's exact subnet, not a wider one. Unset outside Production means forwarded headers are ignored.
 
 ## Admin bootstrap (one-time)
 
@@ -118,5 +120,6 @@ docker run -p 5001:5001 --env-file .env auth
 - `GET /health` — static liveness (`{"status":"ok","service":"auth"}`).
 - `GET /health/ready` — readiness: Postgres (`AuthDbContext`) and Redis (only when `REDIS_URL` is set); `503` when a dependency is down.
 - Rate limits (per IP, fixed window) and access-token revocation share the Redis at `REDIS_URL`. Production refuses to start without it. Access tokens last `Jwt:ExpiresMinutes` (default 15).
+- The rate-limit connection times out after 500 ms and fails open with a warning, so a Redis outage does not hold login or registration for the default 5 s.
 - Logging: Serilog, compact JSON on console outside Development. Every request gets an `X-Correlation-Id` (taken from the request if safe, generated otherwise, echoed in the response and attached to all log lines). Authorization headers/tokens are never logged.
 - SonarCloud (optional): CI runs `dotnet-sonarscanner` only when the `SONAR_TOKEN` secret is available (skipped on fork PRs). Optional repo variables `SONAR_ORGANIZATION` (default `dut-pbl6-2026`) and `SONAR_PROJECT_KEY` (default `dut-pbl6-2026_job-platform-auth-svc`).

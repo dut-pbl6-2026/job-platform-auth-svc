@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
-using System.Net;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -8,6 +7,7 @@ using System.Net.Http.Headers;
 using Auth.Api.Bootstrap;
 using Auth.Api.Endpoints;
 using Auth.Api.Observability;
+using Auth.Api.Networking;
 using Auth.Api.RateLimiting;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
@@ -80,20 +80,15 @@ if (string.IsNullOrWhiteSpace(webUrl) && !builder.Environment.IsDevelopment())
 
 // ForwardedHeaders: trusted only from configured proxies. With none configured the
 // middleware is not registered, because an empty KnownProxies list trusts every peer.
-var knownProxies = (builder.Configuration["ForwardedHeaders:KnownProxies"] ?? string.Empty)
-    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-    .Select(static proxy => IPAddress.Parse(proxy))
-    .ToArray();
-if (knownProxies.Length > 0)
+// Resolved eagerly: Production fails startup when ForwardedHeaders:KnownNetworks is empty or catch-all.
+var forwardedProxyNetworks = ForwardedProxyTrust.ReadNetworks(builder.Configuration, builder.Environment.IsProduction());
+if (forwardedProxyNetworks.Count > 0)
 {
     builder.Services.Configure<ForwardedHeadersOptions>(o =>
     {
         o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-        o.KnownIPNetworks.Clear();
-        o.KnownProxies.Clear();
-        foreach (var proxy in knownProxies)
-            o.KnownProxies.Add(proxy);
-        o.ForwardLimit = 2; // Cloud Ingress + Gateway hops
+        o.ForwardLimit = 1; // Right-most entry only: the entry the gateway appended for the client.
+        ForwardedProxyTrust.Apply(o, forwardedProxyNetworks);
     });
 }
 
@@ -126,7 +121,7 @@ if (!string.IsNullOrWhiteSpace(redisUrl))
     // Rate-limit counters share this Redis, so the limit holds across replicas. The middleware is built
     // with the pipeline, so this connection is opened at startup.
     builder.Services.AddSingleton<IRateLimitCounterStore>(_ =>
-        new RedisRateLimitCounterStore(ConnectionMultiplexer.Connect(redisOptions)));
+        new RedisRateLimitCounterStore(ConnectionMultiplexer.Connect(RateLimitRedisOptions.Create(redisOptions))));
 }
 else
 {
@@ -147,8 +142,12 @@ builder.Services.AddSingleton<ITokenRevocationStore, TokenRevocationStore>();
 // Resolved here, not inside the factory below, so a missing mail setting stops startup instead of the first email.
 var emailSenderKind = EmailSenderSelection.Resolve(builder.Environment.IsDevelopment(), builder.Configuration);
 builder.Services.AddSingleton<IEmailSender>(sp => emailSenderKind == EmailSenderKind.Smtp
-    ? new SmtpEmailSender(sp.GetRequiredService<ILogger<SmtpEmailSender>>(), sp.GetRequiredService<IConfiguration>())
+    ? new SmtpEmailSender(sp.GetRequiredService<IConfiguration>())
     : new LoggerEmailSender(sp.GetRequiredService<ILogger<LoggerEmailSender>>()));
+// Auth emails are written to the outbox in the request's transaction and sent by this worker, so the
+// response never waits for SMTP. Several replicas may run the worker: the dispatcher claims rows with a lease.
+builder.Services.AddSingleton<EmailOutboxDispatcher>();
+builder.Services.AddHostedService<EmailOutboxWorker>();
 
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAdminService, AdminService>();
@@ -335,7 +334,7 @@ if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
     app.UseSwaggerUI();
 }
 
-if (knownProxies.Length > 0)
+if (forwardedProxyNetworks.Count > 0)
     app.UseForwardedHeaders();
 app.UseCors("Default");
 app.UseMiddleware<IpRateLimitMiddleware>();

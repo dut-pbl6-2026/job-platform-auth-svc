@@ -29,6 +29,7 @@ public sealed class StartupConfigurationTests
         using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
         {
             ["Jwt:Secret"] = ValidSecret,
+            ["ForwardedHeaders:KnownNetworks"] = "10.0.0.0/8",
             ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
             ["WEB_URL"] = "https://app.example.test",
             ["REDIS_URL"] = "",
@@ -45,6 +46,7 @@ public sealed class StartupConfigurationTests
         using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
         {
             ["Jwt:Secret"] = ValidSecret,
+            ["ForwardedHeaders:KnownNetworks"] = "10.0.0.0/8",
             ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
             ["WEB_URL"] = "",
             ["WebUrl"] = "",
@@ -61,6 +63,7 @@ public sealed class StartupConfigurationTests
         using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
         {
             ["Jwt:Secret"] = ValidSecret,
+            ["ForwardedHeaders:KnownNetworks"] = "10.0.0.0/8",
             ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
             ["WEB_URL"] = "https://app.example.test",
             ["REDIS_URL"] = "localhost:6379",
@@ -92,6 +95,41 @@ public sealed class StartupConfigurationTests
         var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
 
         Assert.Contains("EMAIL_SENDER=log", ex.ToString());
+    }
+
+    [Fact]
+    public void Startup_Fails_InProduction_WhenKnownNetworksMissing()
+    {
+        using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
+        {
+            ["Jwt:Secret"] = ValidSecret,
+            ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
+            ["WEB_URL"] = "https://app.example.test",
+            ["ForwardedHeaders:KnownNetworks"] = "",
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains("ForwardedHeaders:KnownNetworks must list the gateway's network", ex.ToString());
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0/0")]
+    [InlineData("::/0")]
+    [InlineData("10.0.0.0/8, 0.0.0.0/0")]
+    public void Startup_Fails_InProduction_WhenKnownNetworksTrustsEveryPeer(string networks)
+    {
+        using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
+        {
+            ["Jwt:Secret"] = ValidSecret,
+            ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
+            ["WEB_URL"] = "https://app.example.test",
+            ["ForwardedHeaders:KnownNetworks"] = networks,
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains("trusts every peer", ex.ToString());
     }
 
     private sealed class ConfigFactory(string environment, IDictionary<string, string?> settings) : WebApplicationFactory<Program>

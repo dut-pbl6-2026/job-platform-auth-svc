@@ -34,7 +34,11 @@ public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLi
         builder.UseSetting("SMTP_USER", "test-user");
         builder.UseSetting("SMTP_PASS", "test-pass");
         builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
-        builder.ConfigureTestServices(services => services.AddSingleton<Auth.Core.Interfaces.IEmailSender>(new RecordingEmailSender()));
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton<Auth.Core.Interfaces.IEmailSender>(new RecordingEmailSender());
+            EmailOutboxWorkerRemoval.Remove(services);
+        });
         builder.ConfigureServices(services =>
         {
             var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<AuthDbContext>));

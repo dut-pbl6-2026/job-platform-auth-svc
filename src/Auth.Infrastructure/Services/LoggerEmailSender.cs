@@ -1,3 +1,4 @@
+using Auth.Core.Entities;
 using Auth.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 
@@ -8,36 +9,15 @@ namespace Auth.Infrastructure.Services;
 /// it out of every other environment, so the link is written to the log only on a developer's machine.
 /// Nothing is delivered.
 /// </summary>
-public class LoggerEmailSender : IEmailSender
+public class LoggerEmailSender(ILogger<LoggerEmailSender> logger) : IEmailSender
 {
-    private readonly ILogger<LoggerEmailSender> _logger;
-
-    public LoggerEmailSender(ILogger<LoggerEmailSender> logger)
+    public Task SendAsync(EmailOutboxMessage message, CancellationToken ct = default)
     {
-        _logger = logger;
-    }
-
-    public Task SendPasswordResetAsync(string email, string resetLink, CancellationToken ct = default)
-    {
-        _logger.LogInformation("DEV ONLY AUDIT PasswordReset Email={Email} Link={Link} Sent=false (EMAIL_SENDER=log)", LogRedaction.MaskEmail(email), resetLink);
-        return Task.CompletedTask;
-    }
-
-    public Task SendEmailVerificationAsync(string email, string verificationLink, CancellationToken ct = default)
-    {
-        _logger.LogInformation("DEV ONLY AUDIT EmailVerification Email={Email} Link={Link} Sent=false (EMAIL_SENDER=log)", LogRedaction.MaskEmail(email), verificationLink);
-        return Task.CompletedTask;
-    }
-
-    public Task SendDuplicateRegistrationNoticeAsync(string email, CancellationToken ct = default)
-    {
-        _logger.LogInformation("DEV ONLY AUDIT DuplicateRegistrationNotice Email={Email} Sent=false (EMAIL_SENDER=log)", LogRedaction.MaskEmail(email));
-        return Task.CompletedTask;
-    }
-
-    public Task SendUnknownAccountPasswordResetNoticeAsync(string email, CancellationToken ct = default)
-    {
-        _logger.LogInformation("DEV ONLY AUDIT UnknownAccountResetNotice Email={Email} Sent=false (EMAIL_SENDER=log)", LogRedaction.MaskEmail(email));
+        logger.LogInformation(
+            "DEV ONLY AUDIT {Kind} Email={Email} Link={Link} Sent=false (EMAIL_SENDER=log)",
+            message.Kind,
+            LogRedaction.MaskEmail(message.Recipient),
+            message.Link ?? "(none)");
         return Task.CompletedTask;
     }
 }

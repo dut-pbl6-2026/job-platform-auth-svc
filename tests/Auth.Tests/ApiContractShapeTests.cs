@@ -39,6 +39,7 @@ public sealed class ApiContractShapeTests : IClassFixture<RecordingAuthFactory>,
     {
         var email = $"{prefix}{Guid.NewGuid():N}@test.com";
         await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(email, Password, "Shape User"));
+        await _factory.DeliverPendingEmailsAsync();
         var token = RecordingEmailSender.TokenFrom(_factory.Emails.Single("EmailVerification").Link!);
         await client.PostAsJsonAsync("/api/auth/verify-email", new VerifyEmailRequest(token));
         return email;
@@ -59,6 +60,7 @@ public sealed class ApiContractShapeTests : IClassFixture<RecordingAuthFactory>,
     {
         var client = _factory.CreateClient();
         await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest($"ver{Guid.NewGuid():N}@test.com", Password, "Ver"));
+        await _factory.DeliverPendingEmailsAsync();
         var token = RecordingEmailSender.TokenFrom(_factory.Emails.Single("EmailVerification").Link!);
 
         var res = await client.PostAsJsonAsync("/api/auth/verify-email", new VerifyEmailRequest(token));
@@ -106,6 +108,7 @@ public sealed class ApiContractShapeTests : IClassFixture<RecordingAuthFactory>,
         Assert.Equal(HttpStatusCode.OK, forgot.StatusCode);
         Assert.Equal(["message"], Keys(await ReadAsync(forgot)));
 
+        await _factory.DeliverPendingEmailsAsync();
         var token = Uri.UnescapeDataString(_factory.Emails.Single("PasswordReset").Link!.Split("token=")[1]);
         var reset = await client.PostAsJsonAsync("/api/auth/reset-password", new ResetPasswordRequest(token, "NewSecure456"));
         Assert.Equal(HttpStatusCode.OK, reset.StatusCode);

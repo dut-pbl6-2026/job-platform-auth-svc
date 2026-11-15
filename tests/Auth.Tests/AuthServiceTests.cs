@@ -1,4 +1,5 @@
 using Auth.Core.Contracts;
+using Auth.Core.Entities;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
@@ -36,14 +37,13 @@ public class AuthServiceTests : IAsyncLifetime
 
     private AuthDbContext CreateDb() => _fixture.CreateDbContext();
 
-    private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null, IPasswordHasher? hasher = null, IEmailSender? emailSender = null, ITokenRevocationStore? revocationStore = null)
+    private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null, IPasswordHasher? hasher = null, ITokenRevocationStore? revocationStore = null)
     {
         hasher ??= new PasswordHasherService();
         var jwt = new JwtTokenService(Options.Create(JwtOptions));
-        emailSender ??= new Mock<IEmailSender>().Object;
         revocationStore ??= new Mock<ITokenRevocationStore>().Object;
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" }).Build();
-        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, emailSender, cfg, revocationStore, companyClient);
+        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, cfg, revocationStore, companyClient);
     }
 
 
@@ -64,25 +64,25 @@ public class AuthServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Register_NewEmail_SendsVerificationLinkWithToken()
+    public async Task Register_NewEmail_QueuesOneVerificationLinkWithToken()
     {
         using var db = CreateDb();
-        var emails = new Mock<IEmailSender>();
-        var svc = CreateService(db, emailSender: emails.Object);
+        var svc = CreateService(db);
         await svc.RegisterAsync(new RegisterRequest("link@b.com", "SecureP@ss123", "Link"));
-        emails.Verify(e => e.SendEmailVerificationAsync(
-            "link@b.com",
-            It.Is<string>(l => l.StartsWith("http://localhost:5173/verify-email?token=")),
-            It.IsAny<CancellationToken>()), Times.Once);
-        emails.Verify(e => e.SendDuplicateRegistrationNoticeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        var queued = await db.EmailOutboxMessages.SingleAsync();
+        Assert.Equal(EmailKind.EmailVerification, queued.Kind);
+        Assert.Equal("link@b.com", queued.Recipient);
+        Assert.StartsWith("http://localhost:5173/verify-email?token=", queued.Link);
+        Assert.NotNull(queued.LinkExpiresAt);
+        Assert.Null(queued.SentAt);
     }
 
     [Fact]
     public async Task Register_DuplicateEmail_SucceedsWithNoticeAndNoAccountChange()
     {
         using var db = CreateDb();
-        var emails = new Mock<IEmailSender>();
-        var svc = CreateService(db, emailSender: emails.Object);
+        var svc = CreateService(db);
         await svc.RegisterAsync(new RegisterRequest("dup@b.com", "SecureP@ss123", "A"));
         var before = await db.Users.AsNoTracking().SingleAsync(u => u.Email == "dup@b.com");
 
@@ -93,7 +93,9 @@ public class AuthServiceTests : IAsyncLifetime
         Assert.Equal(before.PasswordHash, after.PasswordHash);
         Assert.Equal("A", after.FullName);
         Assert.Equal(1, await db.Users.CountAsync(u => u.Email == "dup@b.com"));
-        emails.Verify(e => e.SendDuplicateRegistrationNoticeAsync("dup@b.com", It.IsAny<CancellationToken>()), Times.Once);
+        var notices = await db.EmailOutboxMessages.Where(m => m.Kind == EmailKind.DuplicateRegistrationNotice).ToListAsync();
+        Assert.Equal("dup@b.com", Assert.Single(notices).Recipient);
+        Assert.Null(Assert.Single(notices).Link);
     }
 
     [Fact]
