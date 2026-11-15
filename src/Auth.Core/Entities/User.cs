@@ -12,6 +12,10 @@ public class User : Entity
     public bool IsActive { get; private set; } = true;
     public DateTime? LastLoginAt { get; private set; }
 
+    /// <summary>Set once the owner redeems the verification link. Null means the account is pending.</summary>
+    public DateTime? EmailVerifiedAt { get; private set; }
+    public bool IsEmailVerified => EmailVerifiedAt is not null;
+
     private User() { }
     public User(string email, string passwordHash, string fullName, string role = "User", Guid? companyId = null)
     {
@@ -23,6 +27,7 @@ public class User : Entity
     }
     public void UpdatePassword(string hash) { PasswordHash = hash; Touch(); }
     public void RecordLogin() { LastLoginAt = DateTime.UtcNow; Touch(); }
+    public void VerifyEmail() { EmailVerifiedAt ??= DateTime.UtcNow; Touch(); }
     public void Deactivate() { IsActive = false; Touch(); }
     public void Activate() { IsActive = true; Touch(); }
 }

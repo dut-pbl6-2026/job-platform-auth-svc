@@ -23,4 +23,23 @@ public class LoggerEmailSender : IEmailSender
         _logger.LogDebug("AUDIT PasswordReset Email={Email} LinkHash={Hash} (logger fallback — no SMTP configured)", email, hash);
         return Task.CompletedTask;
     }
+
+    public Task SendEmailVerificationAsync(string email, string verificationLink, CancellationToken ct = default)
+    {
+        // Verification links are bearer secrets: never logged, not even as a preview.
+        _logger.LogInformation("AUDIT EmailVerification Email={Email} Sent=false Reason=NoSmtp (fallback)", email);
+        return Task.CompletedTask;
+    }
+
+    public Task SendDuplicateRegistrationNoticeAsync(string email, CancellationToken ct = default)
+    {
+        _logger.LogInformation("AUDIT DuplicateRegistrationNotice Email={Email} Sent=false Reason=NoSmtp (fallback)", email);
+        return Task.CompletedTask;
+    }
+
+    public Task SendUnknownAccountPasswordResetNoticeAsync(string email, CancellationToken ct = default)
+    {
+        _logger.LogInformation("AUDIT UnknownAccountResetNotice Email={Email} Sent=false Reason=NoSmtp (fallback)", email);
+        return Task.CompletedTask;
+    }
 }

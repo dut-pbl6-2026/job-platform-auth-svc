@@ -45,21 +45,22 @@ if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     throw new InvalidOperationException("Jwt:Secret must be at least 32 characters (set Jwt__Secret outside Development)");
 builder.Services.PostConfigure<JwtOptions>(o => o.Secret = jwt.Secret);
 
-// EF — Npgsql Connection Setup
+// EF — Npgsql connection string comes from configuration only (no committed fallback).
+// Development: set DATABASE_URL_AUTH (see README). Other environments: set it as well.
 var conn = builder.Configuration.GetConnectionString("AuthDb")
-           ?? builder.Configuration["DATABASE_URL_AUTH"]
-           ?? builder.Configuration["ConnectionStrings:AuthDb"];
+           ?? builder.Configuration["DATABASE_URL_AUTH"];
 
 if (string.IsNullOrWhiteSpace(conn))
-{
-    if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
-    {
-        throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings:AuthDb (PORT-05)");
-    }
-    conn = "Host=localhost;Port=5432;Database=job_platform_auth;Username=postgres;Password=__DEV_ONLY__";
-}
+    throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings__AuthDb");
 
 builder.Services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(conn));
+
+// Verification and reset links point at the web app. A localhost default would send unusable
+// links, so the URL is required everywhere except Development.
+var webUrl = builder.Configuration["WEB_URL"] ?? builder.Configuration["WebUrl"];
+if (string.IsNullOrWhiteSpace(webUrl) && !builder.Environment.IsDevelopment())
+    throw new InvalidOperationException("WEB_URL missing — required for verification and password-reset links");
+
 
 // ForwardedHeaders: trusted only from configured proxies. With none configured the
 // middleware is not registered, because an empty KnownProxies list trusts every peer.
@@ -115,7 +116,7 @@ else
 }
 
 // Application Services
-builder.Services.AddSingleton<PasswordHasherService>();
+builder.Services.AddSingleton<IPasswordHasher, PasswordHasherService>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<ITokenRevocationStore, TokenRevocationStore>();
 
@@ -288,6 +289,7 @@ builder.Services.AddRateLimiter(options =>
     AddIpFixedWindowPolicy(options, "refresh", permitLimit: 30, window: TimeSpan.FromMinutes(15));
     AddIpFixedWindowPolicy(options, "reset", permitLimit: 10, window: TimeSpan.FromHours(1));
     AddIpFixedWindowPolicy(options, "forgot", permitLimit: 5, window: TimeSpan.FromHours(1));
+    AddIpFixedWindowPolicy(options, "verify", permitLimit: 10, window: TimeSpan.FromMinutes(15));
 });
 
 // OpenAPI & Health
@@ -367,6 +369,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 app.MapGet("/", () => Results.Ok(new { service = "auth", version = "0.1.0" }));
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapInternalUserEndpoints();
 
 app.Run();
 

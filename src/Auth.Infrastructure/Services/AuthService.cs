@@ -12,14 +12,15 @@ namespace Auth.Infrastructure.Services;
 public class AuthService : IAuthService
 {
     private readonly AuthDbContext _db;
-    private readonly PasswordHasherService _hasher;
+    private readonly IPasswordHasher _hasher;
     private readonly JwtTokenService _jwt;
     private readonly ILogger<AuthService> _logger;
     private readonly IEmailSender _emailSender;
     private readonly ICompanyValidationClient? _companyClient;
+    private readonly ITokenRevocationStore _revocationStore;
     private readonly IConfiguration _config;
 
-    public AuthService(AuthDbContext db, PasswordHasherService hasher, JwtTokenService jwt, ILogger<AuthService> logger, IEmailSender emailSender, IConfiguration config, ICompanyValidationClient? companyClient = null)
+    public AuthService(AuthDbContext db, IPasswordHasher hasher, JwtTokenService jwt, ILogger<AuthService> logger, IEmailSender emailSender, IConfiguration config, ITokenRevocationStore revocationStore, ICompanyValidationClient? companyClient = null)
     {
         _db = db;
         _hasher = hasher;
@@ -27,63 +28,114 @@ public class AuthService : IAuthService
         _logger = logger;
         _emailSender = emailSender;
         _config = config;
+        _revocationStore = revocationStore;
         _companyClient = companyClient;
     }
 
-    public async Task<Result<Guid>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
+    /// <summary>
+    /// Succeeds for any well-formed request, whether or not the email is already registered, so
+    /// the response cannot be used to enumerate accounts. A new address gets a pending account and
+    /// a verification link; an existing address gets a notice to its owner and no account change.
+    /// Both paths do the same work: password hash, lookup, one email send.
+    /// </summary>
+    public async Task<Result> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
     {
         var email = request.Email.Trim().ToLowerInvariant();
         var role = string.IsNullOrWhiteSpace(request.Role) ? "User" : request.Role.Trim();
         // Admin accounts are provisioned out-of-band (DB bootstrap), never via public registration.
         var allowedRoles = new[] { "User", "Recruiter" };
         if (!allowedRoles.Contains(role))
-            return Result<Guid>.Failure("Invalid role");
+            return Result.Failure("Invalid role");
 
         if (!IsPasswordStrong(request.Password))
-            return Result<Guid>.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
+            return Result.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
 
         // SRS AUTH-01-06: Recruiter requires companyId (FK → Company)
         if (role == "Recruiter" && !request.CompanyId.HasValue)
-            return Result<Guid>.Failure("companyId required for Recruiter");
+            return Result.Failure("companyId required for Recruiter");
         if (request.CompanyId.HasValue && _companyClient != null)
         {
             var exists = await _companyClient.ExistsAsync(request.CompanyId.Value, ct);
             if (!exists)
-                return Result<Guid>.Failure("Invalid companyId");
+                return Result.Failure("Invalid companyId");
         }
 
-        var existsEmail = await _db.Users.AnyAsync(u => u.Email == email, ct);
-        if (existsEmail)
-        {
-            _logger.LogWarning("AUDIT AuthEvent=RegisterFailed Email={Email} Reason=Duplicate", email);
-            return Result<Guid>.Failure("Email exists");
-        }
-
+        // Hash before the lookup on BOTH paths, so a duplicate costs the same as a new registration.
         var hash = _hasher.Hash(request.Password);
+
+        var existingUser = await _db.Users.AnyAsync(u => u.Email == email, ct);
+        if (existingUser)
+        {
+            _logger.LogWarning("AUDIT AuthEvent=RegisterDuplicate Email={Email}", email);
+            await _emailSender.SendDuplicateRegistrationNoticeAsync(email, ct);
+            return Result.Success();
+        }
+
         var companyId = role == "Recruiter" ? request.CompanyId : null;
         var user = new User(email, hash, request.FullName.Trim(), role, companyId);
+        var plainToken = _jwt.GenerateRefreshToken();
+        var tokenHash = _jwt.HashToken(plainToken);
         _db.Users.Add(user);
+        _db.EmailVerificationTokens.Add(new EmailVerificationToken(user.Id, tokenHash, DateTime.UtcNow.Add(EmailVerificationToken.Lifetime)));
         try
         {
             await _db.SaveChangesAsync(ct);
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
-            _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterFailed Email={Email} Reason=Duplicate", email);
-            return Result<Guid>.Failure("Email exists");
+            // Lost a race with a concurrent registration for the same address: same response as the duplicate path.
+            _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterDuplicate Email={Email} Reason=Race", email);
+            await _emailSender.SendDuplicateRegistrationNoticeAsync(email, ct);
+            return Result.Success();
         }
 
-        _logger.LogInformation("AUDIT AuthEvent=RegisterSuccess UserId={UserId} Email={Email} Role={Role} CompanyId={CompanyId}", user.Id, email, role, companyId);
-        return Result<Guid>.Success(user.Id);
+        var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
+        await _emailSender.SendEmailVerificationAsync(email, link, ct);
+        _logger.LogInformation("AUDIT AuthEvent=RegisterPending UserId={UserId} Email={Email} Role={Role} CompanyId={CompanyId}", user.Id, email, role, companyId);
+        return Result.Success();
+    }
+
+    public async Task<Result> VerifyEmailAsync(string token, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return Result.Failure("Invalid or expired token");
+
+        var hash = _jwt.HashToken(token);
+        var stored = await _db.EmailVerificationTokens.FirstOrDefaultAsync(x => x.TokenHash == hash, ct);
+        if (stored == null || !stored.IsUsableAt(DateTime.UtcNow))
+        {
+            _logger.LogWarning("AUDIT AuthEvent=VerifyEmailFailed Reason=InvalidOrExpired");
+            return Result.Failure("Invalid or expired token");
+        }
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == stored.UserId, ct);
+        if (user == null)
+            return Result.Failure("Invalid or expired token");
+
+        user.VerifyEmail();
+        stored.MarkUsed();
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation("AUDIT AuthEvent=VerifyEmailSuccess UserId={UserId}", user.Id);
+        return Result.Success();
     }
 
     public async Task<Result<AuthResponse>> LoginAsync(LoginRequest request, CancellationToken ct = default)
     {
         var email = request.Email.Trim().ToLowerInvariant();
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
-        if (user == null || !_hasher.Verify(request.Password, user.PasswordHash))
+        // Always run one hash verification, against a dummy hash for unknown emails, so
+        // response time does not reveal whether the account exists.
+        var passwordMatches = _hasher.Verify(request.Password, user?.PasswordHash ?? _hasher.DummyHash);
+        if (user == null || !passwordMatches)
         {
             _logger.LogWarning("AUDIT AuthEvent=LoginFailed Email={Email} Reason=InvalidCredentials", email);
+            return Result<AuthResponse>.Failure("Invalid credentials");
+        }
+
+        // Pending accounts get the same response as bad credentials (no account-state oracle).
+        if (!user.IsEmailVerified)
+        {
+            _logger.LogWarning("AUDIT AuthEvent=LoginFailed UserId={UserId} Reason=EmailNotVerified", user.Id);
             return Result<AuthResponse>.Failure("Invalid credentials");
         }
 
@@ -175,6 +227,8 @@ public class AuthService : IAuthService
             var actives = await _db.RefreshTokens.Where(x => x.UserId == userId && !x.IsRevoked && x.ExpiresAt > DateTime.UtcNow).ToListAsync(ct);
             foreach (var t in actives) t.Revoke();
             if (actives.Count > 0) await _db.SaveChangesAsync(ct);
+            // Access tokens are stateless JWTs: revoke them too, or they stay valid until they expire.
+            await _revocationStore.RevokeUserTokensAsync(userId, DateTimeOffset.UtcNow, ct);
             _logger.LogInformation("AUDIT AuthEvent=Logout UserId={UserId} Mode=All Count={Count}", userId, actives.Count);
         }
         return Result.Success();
@@ -193,7 +247,9 @@ public class AuthService : IAuthService
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
         if (user == null)
         {
+            // No account: send a notice instead of a reset link, so the same email send happens either way.
             _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=false", email);
+            await _emailSender.SendUnknownAccountPasswordResetNoticeAsync(email, ct);
             return Result.Success();
         }
 
@@ -204,8 +260,7 @@ public class AuthService : IAuthService
         _db.PasswordResetTokens.Add(prt);
         await _db.SaveChangesAsync(ct);
 
-        var webUrl = _config["WEB_URL"] ?? _config["WebUrl"] ?? "http://localhost:5173";
-        var link = $"{webUrl.TrimEnd('/')}/reset-password?token={Uri.EscapeDataString(plainToken)}";
+        var link = $"{WebUrl()}/reset-password?token={Uri.EscapeDataString(plainToken)}";
         await _emailSender.SendPasswordResetAsync(email, link, ct);
         _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=true TokenHash={Hash}", email, hash[..8]);
         return Result.Success();
@@ -234,9 +289,13 @@ public class AuthService : IAuthService
         foreach (var t in actives) t.Revoke();
 
         await _db.SaveChangesAsync(ct);
+        // Access tokens issued before the reset must stop working now, not at their expiry.
+        await _revocationStore.RevokeUserTokensAsync(user.Id, DateTimeOffset.UtcNow, ct);
         _logger.LogInformation("AUDIT AuthEvent=ResetPasswordSuccess UserId={UserId} RevokedCount={Count}", user.Id, actives.Count);
         return Result.Success();
     }
+
+    private string WebUrl() => (_config["WEB_URL"] ?? _config["WebUrl"] ?? "http://localhost:5173").TrimEnd('/');
 
     private static bool IsPasswordStrong(string pwd)
     {

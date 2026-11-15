@@ -38,5 +38,12 @@ public sealed class AppServiceClient(
             logger.LogWarning(ex, "Application stats response was invalid");
             return null;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Resilience pipeline exhaustion throws its own exception types (not HttpRequestException).
+            // Admin stats must degrade to "unavailable", not fail the whole dashboard with a 500.
+            logger.LogWarning(ex, "Application stats request failed in the resilience pipeline");
+            return null;
+        }
     }
 }

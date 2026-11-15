@@ -27,13 +27,6 @@ public static class AuthEndpoints
             var result = await svc.RegisterAsync(req, ct);
             if (!result.IsSuccess)
             {
-                if (result.Error == "Email exists")
-                    return Results.Conflict(new Microsoft.AspNetCore.Mvc.ProblemDetails
-                    {
-                        Status = 409,
-                        Title = "Email exists",
-                        Detail = "Email already registered"
-                    });
                 if (result.Error is not null && result.Error.Contains("Password"))
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["Password"] = [result.Error] });
                 if (result.Error == "Invalid role")
@@ -45,17 +38,34 @@ public static class AuthEndpoints
                 return Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Status = 400, Detail = result.Error });
             }
 
-            var userId = result.Value!;
-            // 201 Created with relative Location per RFC 9110 §10.2.2 — gateway compatible
-            return TypedResults.Created($"/api/users/{userId}", new RegisterResponse(userId, "registered"));
+            // Same 202 whether or not the email is already registered (no account enumeration).
+            return Results.Accepted(value: new RegisterResponse("Check your email to verify your account."));
         })
         .WithName("Register")
-        .WithSummary("Register new user")
+        .WithSummary("Register new user; the account stays pending until the emailed link is verified")
         .AddEndpointFilter<ValidationFilter<RegisterRequest>>()
         .RequireRateLimiting("register")
-        .Produces<RegisterResponse>(201)
-        .ProducesValidationProblem()
-        .ProducesProblem(409);
+        .Produces<RegisterResponse>(202)
+        .ProducesValidationProblem();
+
+        group.MapPost("/verify-email", async (
+            VerifyEmailRequest req,
+            IAuthService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.VerifyEmailAsync(req.Token, ct);
+            if (!result.IsSuccess)
+                return Results.Problem(statusCode: 400, detail: result.Error);
+
+            return Results.Ok(new { message = "Email verified. You can now log in." });
+        })
+        .WithName("VerifyEmail")
+        .WithSummary("Activate a pending account with the emailed one-time link token (24h)")
+        .AddEndpointFilter<ValidationFilter<VerifyEmailRequest>>()
+        .RequireRateLimiting("verify")
+        .Produces(200)
+        .ProducesProblem(400)
+        .ProducesValidationProblem();
 
         group.MapPost("/login", async (
             LoginRequest req,
