@@ -70,7 +70,8 @@ No connection string or secret is committed. Required environment variables:
 - `DATABASE_URL_AUTH` (or `ConnectionStrings__AuthDb`): Npgsql connection string. Startup fails when missing. Copy it from `.env` (`mise run sync-env`).
 - `Jwt__Secret`: at least 32 characters. Startup fails outside Development when missing. Development generates a per-process key when unset.
 - `WEB_URL`: web app origin for verification and reset links. Startup fails outside Development when missing.
-- `INTERNAL_SERVICE_TOKEN`: bearer token for `/api/internal/*` (not routed by the gateway). Unset means the endpoints return 401.
+- `AUTH_INTERNAL_TOKEN_FOR_NOTIF`: bearer token notif-svc presents on `/api/internal/*` (not routed by the gateway). Unset means the endpoint returns 401; required outside Development.
+- `JOB_INTERNAL_TOKEN_FOR_AUTH` / `APP_INTERNAL_TOKEN_FOR_AUTH`: tokens auth-svc presents to job-svc and app-svc `/api/internal/stats`. Required outside Development.
 - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`: outgoing mail for verification, password-reset and notice emails. Startup fails outside Development when any of the four is missing (the message lists the missing names, never the values). Optional: `SMTP_PORT` (default `587`), `SMTP_SSL` (default `true`, STARTTLS).
   - Production uses a Google account: `SMTP_HOST=smtp.gmail.com`, `SMTP_PASS` is a Google App Password (2-Step Verification on), and `SMTP_FROM` must equal `SMTP_USER` because Gmail rewrites the From address.
 - `EMAIL_SENDER`: Development only. `log` writes each auth email, including its one-time link, to the console log and sends nothing (explicit opt-in). `smtp` forces SMTP. When unset, Development uses SMTP if `SMTP_HOST` is set and otherwise fails at startup, so emails are never silently dropped. `log` outside Development fails startup.

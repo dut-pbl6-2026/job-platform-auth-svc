@@ -35,7 +35,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 - `POST /api/auth/register` `202 Accepted` `{message}` for new and existing emails alike (no enumeration): new email → pending account + one-time 24h verification link (`POST /api/auth/verify-email`); existing email → notice to owner, no change. Login refuses unverified accounts with the same `401` as bad credentials. Pwd `8+1upper+1num`, `POST /api/auth/login` `200 {accessToken,refreshToken,user}` `401/403`, `POST /api/auth/refresh` 7/30d SHA256 rotation reuse→revoke family, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password` 15min TTL 5/IP/h anti-enumeration, `POST /api/auth/resend-verification` `202 {message}` same body for unknown, verified and unverified emails; unverified gets a new 24h link through the outbox, `POST /api/auth/reset-password` revokes all tokens, `GET/POST /api/companies` linking `companyId` FK tax_code verified.
 - Gateway `GW-01` validates JWT then forwards `X-User-Id/Role`.
-- `GET /api/internal/users/{id}/email` (service-to-service, `INTERNAL_SERVICE_TOKEN` bearer, fail-closed 401, 404 unknown id). Not routed through the gateway.
+- `GET /api/internal/users/{id}/email` (service-to-service, `AUTH_INTERNAL_TOKEN_FOR_NOTIF` bearer (notif-svc only), fail-closed 401, 404 unknown id). Not routed through the gateway.
 
 ## JWT (SharedKernel JwtOptions)
 

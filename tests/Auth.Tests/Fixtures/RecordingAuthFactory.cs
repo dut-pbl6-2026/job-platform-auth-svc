@@ -26,7 +26,12 @@ namespace Auth.Tests.Fixtures;
 public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     public const string JwtSecret = "unit-test-signing-key-0123456789abcdef";
-    public const string InternalToken = "test-internal-token-0123456789abcdef";
+    /// <summary>Token notif-svc presents on <c>/api/internal/users/{id}/email</c> (AUTH_INTERNAL_TOKEN_FOR_NOTIF).</summary>
+    public const string NotifInternalToken = "test-notif-internal-token-0123456789abcdef";
+    /// <summary>Token auth-svc presents to job-svc and app-svc; must not open auth's own internal endpoints.</summary>
+    public const string OutboundJobToken = "test-job-internal-token-0123456789abcdef";
+    /// <summary>Pre-split shared token. Must no longer be accepted anywhere under <c>/api/internal/*</c>.</summary>
+    public const string LegacySharedToken = "test-legacy-shared-token-0123456789abcdef";
 
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine").Build();
 
@@ -58,7 +63,10 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         // Read when the host is built, which happens after InitializeAsync has started the container.
         builder.UseSetting("ConnectionStrings:AuthDb", ConnectionString);
         builder.UseSetting("WEB_URL", "http://localhost:5173");
-        builder.UseSetting("INTERNAL_SERVICE_TOKEN", InternalToken);
+        builder.UseSetting("AUTH_INTERNAL_TOKEN_FOR_NOTIF", NotifInternalToken);
+        builder.UseSetting("JOB_INTERNAL_TOKEN_FOR_AUTH", OutboundJobToken);
+        builder.UseSetting("APP_INTERNAL_TOKEN_FOR_AUTH", "test-app-internal-token-0123456789abcdef");
+        builder.UseSetting("INTERNAL_SERVICE_TOKEN", LegacySharedToken);
         // Outside Development the host requires SMTP settings. They are placeholders: the recording sender below replaces the SMTP sender.
         builder.UseSetting("SMTP_HOST", "smtp.test.invalid");
         builder.UseSetting("SMTP_USER", "test-user");
