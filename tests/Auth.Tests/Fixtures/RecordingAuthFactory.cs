@@ -34,6 +34,11 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         builder.UseSetting("ConnectionStrings:AuthDb", ConnectionString);
         builder.UseSetting("WEB_URL", "http://localhost:5173");
         builder.UseSetting("INTERNAL_SERVICE_TOKEN", InternalToken);
+        // Outside Development the host requires SMTP settings. They are placeholders: the recording sender below replaces the SMTP sender.
+        builder.UseSetting("SMTP_HOST", "smtp.test.invalid");
+        builder.UseSetting("SMTP_USER", "test-user");
+        builder.UseSetting("SMTP_PASS", "test-pass");
+        builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
         builder.ConfigureTestServices(services => services.AddSingleton<IEmailSender>(Emails));
     }
 

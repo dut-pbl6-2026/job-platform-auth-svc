@@ -67,7 +67,7 @@ public class AuthService : IAuthService
         var existingUser = await _db.Users.AnyAsync(u => u.Email == email, ct);
         if (existingUser)
         {
-            _logger.LogWarning("AUDIT AuthEvent=RegisterDuplicate Email={Email}", email);
+            _logger.LogWarning("AUDIT AuthEvent=RegisterDuplicate Email={Email}", LogRedaction.MaskEmail(email));
             await _emailSender.SendDuplicateRegistrationNoticeAsync(email, ct);
             return Result.Success();
         }
@@ -85,14 +85,14 @@ public class AuthService : IAuthService
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
             // Lost a race with a concurrent registration for the same address: same response as the duplicate path.
-            _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterDuplicate Email={Email} Reason=Race", email);
+            _logger.LogWarning(ex, "AUDIT AuthEvent=RegisterDuplicate Email={Email} Reason=Race", LogRedaction.MaskEmail(email));
             await _emailSender.SendDuplicateRegistrationNoticeAsync(email, ct);
             return Result.Success();
         }
 
         var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
         await _emailSender.SendEmailVerificationAsync(email, link, ct);
-        _logger.LogInformation("AUDIT AuthEvent=RegisterPending UserId={UserId} Email={Email} Role={Role} CompanyId={CompanyId}", user.Id, email, role, companyId);
+        _logger.LogInformation("AUDIT AuthEvent=RegisterPending UserId={UserId} Role={Role} CompanyId={CompanyId}", user.Id, role, companyId);
         return Result.Success();
     }
 
@@ -129,7 +129,7 @@ public class AuthService : IAuthService
         var passwordMatches = _hasher.Verify(request.Password, user?.PasswordHash ?? _hasher.DummyHash);
         if (user == null || !passwordMatches)
         {
-            _logger.LogWarning("AUDIT AuthEvent=LoginFailed Email={Email} Reason=InvalidCredentials", email);
+            _logger.LogWarning("AUDIT AuthEvent=LoginFailed Email={Email} Reason=InvalidCredentials", LogRedaction.MaskEmail(email));
             return Result<AuthResponse>.Failure("Invalid credentials");
         }
 
@@ -249,7 +249,7 @@ public class AuthService : IAuthService
         if (user == null)
         {
             // No account: send a notice instead of a reset link, so the same email send happens either way.
-            _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=false", email);
+            _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=false", LogRedaction.MaskEmail(email));
             await _emailSender.SendUnknownAccountPasswordResetNoticeAsync(email, ct);
             return Result.Success();
         }
@@ -263,7 +263,7 @@ public class AuthService : IAuthService
 
         var link = $"{WebUrl()}/reset-password?token={Uri.EscapeDataString(plainToken)}";
         await _emailSender.SendPasswordResetAsync(email, link, ct);
-        _logger.LogInformation("AUDIT AuthEvent=ForgotPassword Email={Email} Found=true TokenHash={Hash}", email, hash[..8]);
+        _logger.LogInformation("AUDIT AuthEvent=ForgotPassword UserId={UserId} Found=true", user.Id);
         return Result.Success();
     }
 

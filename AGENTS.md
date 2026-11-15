@@ -65,6 +65,12 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 - `dotnet build --warnaserror` + `dotnet format --verify-no-changes` (mise `build/test/format`), `EF` alignment `EF10.0.4` + `Npgsql10.0.3` (MSB3277), coverage `>70%` `MAINT-02`.
 - Never commit `.env` (`.gitignore`), `mise run sync-env` single source `../job-platform-infra/envs/.env.dev.example` (`DATABASE_URL_AUTH`, `JWT_SECRET`).
 
+## Outbound mail (env)
+
+- `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` required outside Development (startup throws, naming missing keys only). Optional `SMTP_PORT` (587), `SMTP_SSL` (true). Gmail: `smtp.gmail.com`, App Password, `SMTP_FROM` = `SMTP_USER`.
+- `EMAIL_SENDER` (Development only): `log` = explicit opt-in to console logging (no delivery, link logged); `smtp` = force SMTP. Unset: SMTP if `SMTP_HOST` set, else startup throws. `log` outside Development throws.
+- Selection: `src/Auth.Infrastructure/Services/EmailSenderSelection.cs` (resolved eagerly in `Program.cs`). Logs carry masked emails (`LogRedaction.MaskEmail`) or user ids, never bodies or tokens.
+
 ## Admin bootstrap (one-time)
 
 - First Admin is created by `bootstrap-admin` (same binary, no HTTP host): `docker run --rm --env-file .env -e ADMIN_BOOTSTRAP_EMAIL -e ADMIN_BOOTSTRAP_PASSWORD auth bootstrap-admin`, or `dotnet run --project src/Auth.Api -- bootstrap-admin` locally.
