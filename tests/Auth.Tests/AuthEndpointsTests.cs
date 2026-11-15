@@ -12,6 +12,8 @@ namespace Auth.Tests;
 
 public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
+    public const string TestJwtSecret = "unit-test-signing-key-0123456789abcdef";
+
     // Same as PostgresFixture: rely on the module default pg_isready probe.
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
         .Build();
@@ -21,16 +23,15 @@ public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLi
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.UseSetting("Jwt:Secret", TestJwtSecret);
         builder.ConfigureServices(services =>
         {
             var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<AuthDbContext>));
             if (descriptor is not null)
                 services.Remove(descriptor);
             services.AddDbContext<AuthDbContext>(o => o.UseNpgsql(ConnectionString));
-            // Ensure Jwt secret is deterministic for CI
             services.Configure<SharedKernel.JwtOptions>(o =>
             {
-                o.Secret = "dev-jwt-secret-change-me-32chars-min";
                 o.Issuer = "job-platform";
                 o.Audience = "job-platform";
                 o.ExpiresMinutes = 60;
