@@ -2,7 +2,6 @@ bin/
 obj/
 .vs/
 *.nupkg
-!local-feed/*.nupkg
 .env
 .env.bak.*
 mise.toml.local
@@ -12,4 +11,3 @@ INFISICAL_TOKEN
 
 .verification-packages/
 .contract-packages/
-local-feed/*-contract.*.nupkg
