@@ -42,6 +42,7 @@ public sealed class DevelopmentEmailStartupTests(PostgresFixture postgres)
         {
             builder.UseEnvironment("Development");
             builder.UseSetting("ConnectionStrings:AuthDb", connectionString);
+            builder.UseSetting(JwtSigningKeys.SigningKeyPemSetting, TestSigningKeys.PrivateKeyPemBase64);
             builder.UseSetting("EMAIL_SENDER", emailSender ?? "");
             builder.UseSetting("SMTP_HOST", smtpHost ?? "");
             builder.UseSetting("SMTP_FROM", smtpHost is null ? "" : "no-reply@job-platform.local");

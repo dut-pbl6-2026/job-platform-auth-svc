@@ -29,7 +29,6 @@ public class AuthServiceTests : IAsyncLifetime
 
     private static JwtOptions JwtOptions => new()
     {
-        Secret = "unit-test-signing-key-0123456789abcdef",
         Issuer = "job-platform",
         Audience = "job-platform",
         ExpiresMinutes = 60
@@ -40,7 +39,7 @@ public class AuthServiceTests : IAsyncLifetime
     private AuthService CreateService(AuthDbContext db, IInviteCodeClient? inviteCodes = null, IPasswordHasher? hasher = null, ITokenRevocationStore? revocationStore = null)
     {
         hasher ??= new PasswordHasherService();
-        var jwt = new JwtTokenService(Options.Create(JwtOptions));
+        var jwt = new JwtTokenService(Options.Create(JwtOptions), TestSigningKeys.Keys);
         revocationStore ??= new Mock<ITokenRevocationStore>().Object;
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" }).Build();
         return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, cfg, revocationStore, inviteCodes);

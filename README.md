@@ -68,7 +68,10 @@ Registration never reveals whether an email is taken: both cases return `202`. A
 No connection string or secret is committed. Required environment variables:
 
 - `DATABASE_URL_AUTH` (or `ConnectionStrings__AuthDb`): Npgsql connection string. Startup fails when missing. Copy it from `.env` (`mise run sync-env`).
-- `Jwt__Secret`: at least 32 characters. Startup fails outside Development when missing. Development generates a per-process key when unset.
+- `Jwt__SigningKeyPem`: base64 of a PKCS#8 PEM RSA private key (2048 bits or more). Required in every environment, no default and no generated fallback. Startup fails naming the setting, never its value.
+  - Generate: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out key.pem && base64 -w0 key.pem`. Keep `key.pem` out of the repo.
+- `Jwt__PreviousPublicKeys__0..n` (optional): base64 of SPKI PEM public keys still published in the JWKS during a key rotation.
+- Validators read the public keys from `GET /.well-known/jwks.json` (discovery at `/.well-known/openid-configuration`). auth-svc is not routed by the gateway for these paths.
 - `WEB_URL`: web app origin for verification and reset links. Startup fails outside Development when missing.
 - `AUTH_INTERNAL_TOKEN_FOR_NOTIF`: bearer token notif-svc presents on `/api/internal/*` (not routed by the gateway). Unset means the endpoint returns 401; required outside Development.
 - `JOB_INTERNAL_TOKEN_FOR_AUTH` / `APP_INTERNAL_TOKEN_FOR_AUTH`: tokens auth-svc presents to job-svc and app-svc `/api/internal/stats`. Required outside Development.

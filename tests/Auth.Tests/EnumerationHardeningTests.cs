@@ -30,7 +30,6 @@ public class EnumerationHardeningTests : IAsyncLifetime
 
     private static JwtOptions Jwt => new()
     {
-        Secret = "unit-test-signing-key-0123456789abcdef",
         Issuer = "job-platform",
         Audience = "job-platform",
         ExpiresMinutes = 60
@@ -42,7 +41,7 @@ public class EnumerationHardeningTests : IAsyncLifetime
 
     private AuthDbContext CreateDb() => _fixture.CreateDbContext();
 
-    private static JwtTokenService Tokens() => new(Options.Create(Jwt));
+    private static JwtTokenService Tokens() => new(Options.Create(Jwt), TestSigningKeys.Keys);
 
     private AuthService Service(AuthDbContext db, IPasswordHasher? hasher = null, ITokenRevocationStore? revocation = null) =>
         new(db, hasher ?? new PasswordHasherService(), Tokens(), NullLogger<AuthService>.Instance,

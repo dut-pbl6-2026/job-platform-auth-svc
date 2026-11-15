@@ -1,3 +1,4 @@
+using Auth.Infrastructure.Services;
 using System.Net;
 using System.Net.Http.Json;
 using Auth.Core.Contracts;
@@ -14,7 +15,6 @@ namespace Auth.Tests;
 
 public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    public const string TestJwtSecret = "unit-test-signing-key-0123456789abcdef";
 
     // Same as PostgresFixture: rely on the module default pg_isready probe.
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
@@ -25,7 +25,7 @@ public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLi
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
-        builder.UseSetting("Jwt:Secret", TestJwtSecret);
+        builder.UseSetting(JwtSigningKeys.SigningKeyPemSetting, TestSigningKeys.PrivateKeyPemBase64);
         // Read lazily when the host is built (after InitializeAsync has started the container).
         builder.UseSetting("ConnectionStrings:AuthDb", ConnectionString);
         builder.UseSetting("WEB_URL", "http://localhost:5173");

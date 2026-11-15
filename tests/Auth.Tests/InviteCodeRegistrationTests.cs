@@ -156,11 +156,10 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
     {
         var jwt = new JwtTokenService(Options.Create(new JwtOptions
         {
-            Secret = "unit-test-signing-key-0123456789abcdef",
             Issuer = "job-platform",
             Audience = "job-platform",
             ExpiresMinutes = 60,
-        }));
+        }), TestSigningKeys.Keys);
         var cfg = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" })
             .Build();

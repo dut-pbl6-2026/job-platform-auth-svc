@@ -37,9 +37,13 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 - Gateway `GW-01` validates JWT then forwards `X-User-Id/Role`.
 - `GET /api/internal/users/{id}/email` (service-to-service, `AUTH_INTERNAL_TOKEN_FOR_NOTIF` bearer (notif-svc only), fail-closed 401, 404 unknown id). Not routed through the gateway.
 
-## JWT (SharedKernel JwtOptions)
+## JWT (RS256, JWKS)
 
-`shared/JwtOptions.cs: SectionName=Jwt Secret≥32 Issuer=Audience=job-platform ExpiresMinutes=15` (override `Jwt__ExpiresMinutes`)`. `JwtTokenService.cs`: `HmacSha256` claims `sub`=`NameIdentifier`+`Email`+`Role`+`Jti`, expires `AddMinutes(Jwt:ExpiresMinutes)` (default 15), `RandomNumberGenerator 64B Base64` for refresh, `SHA256 Hex Lower` for `TokenHash` (128 char). No committed secret: `Jwt__Secret` must be set outside Development (startup fails if missing or <32 chars); Development generates a random per-process key when unset. Validate `ValidateIssuer/Audience/Lifetime/SigningKey ClockSkew=Zero` in `Program.cs`.
+`SharedKernel JwtOptions`: `SectionName=Jwt`, `Issuer=Audience=job-platform`, `ExpiresMinutes=15` (`Jwt__ExpiresMinutes`). Its `Secret` property is no longer read (owner follow-up: remove it in a SharedKernel release).
+- Signing key: `Jwt__SigningKeyPem` (base64 of PKCS#8 RSA private PEM, 2048+ bits), required in every environment, no default. `Jwt__PreviousPublicKeys__N` lists public keys still published during rotation. Implementation: `src/Auth.Infrastructure/Services/JwtSigningKeys.cs`.
+- `kid` = RFC 7638 thumbprint. `JwtTokenService.cs` signs `RsaSha256`, claims `sub`=`NameIdentifier`+`Email`+`Role`+`Jti`, expires `AddMinutes(Jwt:ExpiresMinutes)`, `RandomNumberGenerator 64B Base64` for refresh, `SHA256 Hex Lower` for `TokenHash` (128 char).
+- Publishes `GET /.well-known/openid-configuration` and `GET /.well-known/jwks.json` (public members only). Not routed by the gateway.
+- Own validation in `Program.cs` uses the in-memory key set: `ValidAlgorithms=[RS256]`, `TryAllIssuerSigningKeys=false`, `ValidateIssuer/Audience/Lifetime/IssuerSigningKey`, `ClockSkew=30s`.
 
 ## Data — EF Core (NFR `6-nfr.md:SEC-03,MAINT`)
 
@@ -63,7 +67,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 - `dotnet 10.0.100` `net10.0` `nullable enable` `ImplicitUsings` file-scoped namespace, `ProblemDetails` + `UseExceptionHandler` + `ILogger` JSON `ERROR/WARN/INFO/DEBUG`, `GET /health` per `8-system-architecture.md`.
 - `dotnet build --warnaserror` + `dotnet format --verify-no-changes` (mise `build/test/format`), `EF` alignment `EF10.0.4` + `Npgsql10.0.3` (MSB3277), coverage `>70%` `MAINT-02`.
-- Never commit `.env` (`.gitignore`), `mise run sync-env` single source `../job-platform-infra/envs/.env.dev.example` (`DATABASE_URL_AUTH`, `JWT_SECRET`).
+- Never commit `.env` (`.gitignore`), `mise run sync-env` single source `../job-platform-infra/envs/.env.dev.example` (`DATABASE_URL_AUTH`, `Jwt__SigningKeyPem`).
 
 ## Outbound mail (env)
 

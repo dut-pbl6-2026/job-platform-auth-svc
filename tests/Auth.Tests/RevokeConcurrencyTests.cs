@@ -39,7 +39,6 @@ public class RevokeConcurrencyTests : IAsyncLifetime
 
     private static JwtOptions Jwt => new()
     {
-        Secret = "unit-test-signing-key-0123456789abcdef",
         Issuer = "job-platform",
         Audience = "job-platform",
         ExpiresMinutes = 60
@@ -49,7 +48,7 @@ public class RevokeConcurrencyTests : IAsyncLifetime
         .AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" })
         .Build();
 
-    private static JwtTokenService Tokens() => new(Options.Create(Jwt));
+    private static JwtTokenService Tokens() => new(Options.Create(Jwt), TestSigningKeys.Keys);
 
     private AuthDbContext CreateDb(params IInterceptor[] interceptors) => new(
         new DbContextOptionsBuilder<AuthDbContext>()
