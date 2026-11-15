@@ -4,7 +4,7 @@
 GET {{Auth.Api_HostAddress}}/health
 Accept: application/json
 
-### Register — 201 Created Location: /api/users/{id} relative (RFC 9110)
+### Register — 202 Accepted {message}; the account is pending until the emailed link is verified
 POST {{Auth.Api_HostAddress}}/api/auth/register
 Content-Type: application/json
 
@@ -15,7 +15,7 @@ Content-Type: application/json
   "role": "User"
 }
 
-### Register duplicate — 409 Conflict
+### Register duplicate — also 202 Accepted (owner receives a notice)
 POST {{Auth.Api_HostAddress}}/api/auth/register
 Content-Type: application/json
 

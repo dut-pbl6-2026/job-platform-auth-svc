@@ -36,14 +36,16 @@ public class AuthServiceTests : IAsyncLifetime
 
     private AuthDbContext CreateDb() => _fixture.CreateDbContext();
 
-    private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null)
+    private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null, IPasswordHasher? hasher = null, IEmailSender? emailSender = null, ITokenRevocationStore? revocationStore = null)
     {
-        var hasher = new PasswordHasherService();
+        hasher ??= new PasswordHasherService();
         var jwt = new JwtTokenService(Options.Create(JwtOptions));
-        var emailMock = new Mock<IEmailSender>();
+        emailSender ??= new Mock<IEmailSender>().Object;
+        revocationStore ??= new Mock<ITokenRevocationStore>().Object;
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" }).Build();
-        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, emailMock.Object, cfg, companyClient);
+        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, emailSender, cfg, revocationStore, companyClient);
     }
+
 
     [Fact]
     public async Task Register_Success_PersistsUser()
@@ -53,22 +55,61 @@ public class AuthServiceTests : IAsyncLifetime
         var req = new RegisterRequest("a@b.com", "SecureP@ss123", "Hoai Nguyen");
         var res = await svc.RegisterAsync(req);
         Assert.True(res.IsSuccess);
-        Assert.NotEqual(Guid.Empty, res.Value);
         var user = await db.Users.FirstAsync(u => u.Email == "a@b.com");
         Assert.Equal("Hoai Nguyen", user.FullName);
         Assert.Equal("User", user.Role);
         Assert.Contains("$12$", user.PasswordHash);
+        Assert.False(user.IsEmailVerified);
+        Assert.Equal(1, await db.EmailVerificationTokens.CountAsync(t => t.UserId == user.Id));
     }
 
     [Fact]
-    public async Task Register_DuplicateEmail_Conflict()
+    public async Task Register_NewEmail_SendsVerificationLinkWithToken()
     {
         using var db = CreateDb();
-        var svc = CreateService(db);
+        var emails = new Mock<IEmailSender>();
+        var svc = CreateService(db, emailSender: emails.Object);
+        await svc.RegisterAsync(new RegisterRequest("link@b.com", "SecureP@ss123", "Link"));
+        emails.Verify(e => e.SendEmailVerificationAsync(
+            "link@b.com",
+            It.Is<string>(l => l.StartsWith("http://localhost:5173/verify-email?token=")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        emails.Verify(e => e.SendDuplicateRegistrationNoticeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Register_DuplicateEmail_SucceedsWithNoticeAndNoAccountChange()
+    {
+        using var db = CreateDb();
+        var emails = new Mock<IEmailSender>();
+        var svc = CreateService(db, emailSender: emails.Object);
         await svc.RegisterAsync(new RegisterRequest("dup@b.com", "SecureP@ss123", "A"));
-        var second = await svc.RegisterAsync(new RegisterRequest("dup@b.com", "SecureP@ss123", "B"));
-        Assert.False(second.IsSuccess);
-        Assert.Equal("Email exists", second.Error);
+        var before = await db.Users.AsNoTracking().SingleAsync(u => u.Email == "dup@b.com");
+
+        var second = await svc.RegisterAsync(new RegisterRequest("dup@b.com", "OtherP@ss999", "B"));
+
+        Assert.True(second.IsSuccess);
+        var after = await db.Users.AsNoTracking().SingleAsync(u => u.Email == "dup@b.com");
+        Assert.Equal(before.PasswordHash, after.PasswordHash);
+        Assert.Equal("A", after.FullName);
+        Assert.Equal(1, await db.Users.CountAsync(u => u.Email == "dup@b.com"));
+        emails.Verify(e => e.SendDuplicateRegistrationNoticeAsync("dup@b.com", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Register_HashesPasswordOnceOnBothNewAndDuplicatePaths()
+    {
+        using var db = CreateDb();
+        var hasher = new Mock<IPasswordHasher>();
+        hasher.Setup(h => h.Hash(It.IsAny<string>())).Returns("hash");
+        hasher.Setup(h => h.DummyHash).Returns("dummy");
+        var svc = CreateService(db, hasher: hasher.Object);
+
+        await svc.RegisterAsync(new RegisterRequest("hc@b.com", "SecureP@ss123", "New"));
+        hasher.Verify(h => h.Hash("SecureP@ss123"), Times.Once);
+
+        await svc.RegisterAsync(new RegisterRequest("hc@b.com", "SecureP@ss123", "Dup"));
+        hasher.Verify(h => h.Hash("SecureP@ss123"), Times.Exactly(2));
     }
 
     [Theory]
@@ -110,6 +151,7 @@ public class AuthServiceTests : IAsyncLifetime
         using var db = CreateDb();
         var svc = CreateService(db);
         await svc.RegisterAsync(new RegisterRequest("login@b.com", "SecureP@ss123", "Login User"));
+        await AccountHelpers.VerifyEmailAsync(db, "login@b.com");
         var res = await svc.LoginAsync(new LoginRequest("login@b.com", "SecureP@ss123"));
         Assert.True(res.IsSuccess);
         Assert.NotNull(res.Value);
@@ -149,6 +191,7 @@ public class AuthServiceTests : IAsyncLifetime
         using var db = CreateDb();
         var svc = CreateService(db);
         await svc.RegisterAsync(new RegisterRequest("rm@b.com", "SecureP@ss123", "RM"));
+        await AccountHelpers.VerifyEmailAsync(db, "rm@b.com");
         await svc.LoginAsync(new LoginRequest("rm@b.com", "SecureP@ss123", true));
         var rt = await db.RefreshTokens.FirstAsync();
         Assert.True(rt.ExpiresAt > DateTime.UtcNow.AddDays(29));
@@ -160,6 +203,7 @@ public class AuthServiceTests : IAsyncLifetime
         using var db = CreateDb();
         var svc = CreateService(db);
         await svc.RegisterAsync(new RegisterRequest("UPPER@B.COM", "SecureP@ss123", "Upper"));
+        await AccountHelpers.VerifyEmailAsync(db, "upper@b.com");
         var user = await db.Users.FirstAsync(u => u.Id != Guid.Empty);
         Assert.Equal("upper@b.com", user.Email);
         var login = await svc.LoginAsync(new LoginRequest("upper@b.com", "SecureP@ss123"));

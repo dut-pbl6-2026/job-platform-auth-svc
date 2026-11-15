@@ -54,11 +54,23 @@ Update SharedKernel: `mise run pack-shared`.
 ```bash
 mise run run              # dotnet run --project src/Auth.Api
 curl http://localhost:5001/health   # {"status":"ok"}
-curl -i -X POST http://localhost:5001/api/auth/register -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123","fullName":"Hoai"}' # 201 Created Location: /api/users/{id}
-curl -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123"}' # 200 {accessToken,refreshToken,user}
+curl -i -X POST http://localhost:5001/api/auth/register -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123","fullName":"Hoai"}' # 202 {"message":"Check your email to verify your account."}
+curl -X POST http://localhost:5001/api/auth/verify-email -H 'Content-Type: application/json' -d '{"token":"<token from the emailed link>"}' # 200 (link valid 24h, single use)
+curl -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123"}' # 200 {accessToken,refreshToken,user} (401 until verified)
 ```
 
 `auto-migrate` on startup, `UseExceptionHandler` + `ILogger`.
+
+Registration never reveals whether an email is taken: both cases return `202`. A new address gets a pending account and a verification link; an existing address gets a notice mail to its owner.
+
+## Configuration
+
+No connection string or secret is committed. Required environment variables:
+
+- `DATABASE_URL_AUTH` (or `ConnectionStrings__AuthDb`): Npgsql connection string. Startup fails when missing. Copy it from `.env` (`mise run sync-env`).
+- `Jwt__Secret`: at least 32 characters. Startup fails outside Development when missing. Development generates a per-process key when unset.
+- `WEB_URL`: web app origin for verification and reset links. Startup fails outside Development when missing.
+- `INTERNAL_SERVICE_TOKEN`: bearer token for `/api/internal/*` (not routed by the gateway). Unset means the endpoints return 401.
 
 ## Docker
 

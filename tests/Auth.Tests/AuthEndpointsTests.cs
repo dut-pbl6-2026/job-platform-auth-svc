@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Auth.Core.Contracts;
 using Auth.Infrastructure.Data;
+using Auth.Tests.Fixtures;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -24,6 +25,9 @@ public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLi
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("Jwt:Secret", TestJwtSecret);
+        // Read lazily when the host is built (after InitializeAsync has started the container).
+        builder.UseSetting("ConnectionStrings:AuthDb", ConnectionString);
+        builder.UseSetting("WEB_URL", "http://localhost:5173");
         builder.ConfigureServices(services =>
         {
             var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<AuthDbContext>));
@@ -101,31 +105,15 @@ public class AuthEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifeti
     }
 
     [Fact]
-    public async Task Register_201_WithRelativeLocation()
+    public async Task Register_202_WithGenericMessageAndNoUserId()
     {
         var client = _factory.CreateClient();
         var req = new RegisterRequest($"user{Guid.NewGuid():N}@test.com", "SecureP@ss123", "Test User");
         var res = await client.PostAsJsonAsync("/api/auth/register", req);
-        Assert.Equal(HttpStatusCode.Created, res.StatusCode);
-        var location = res.Headers.Location?.ToString();
-        Assert.NotNull(location);
-        Assert.StartsWith("/api/users/", location);
+        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
         var body = await res.Content.ReadFromJsonAsync<RegisterResponse>();
         Assert.NotNull(body);
-        Assert.NotEqual(Guid.Empty, body!.UserId);
-        Assert.Equal("registered", body.Message);
-        Assert.EndsWith(body.UserId.ToString(), location);
-    }
-
-    [Fact]
-    public async Task Register_Duplicate_409()
-    {
-        var client = _factory.CreateClient();
-        var req = new RegisterRequest($"dup{Guid.NewGuid():N}@test.com", "SecureP@ss123", "Dup");
-        var first = await client.PostAsJsonAsync("/api/auth/register", req);
-        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
-        var second = await client.PostAsJsonAsync("/api/auth/register", req);
-        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Equal("Check your email to verify your account.", body!.Message);
     }
 
     [Fact]
@@ -134,6 +122,8 @@ public class AuthEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifeti
         var client = _factory.CreateClient();
         var email = $"login{Guid.NewGuid():N}@test.com";
         await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(email, "SecureP@ss123", "Login"));
+        await using (var scope = _factory.Services.CreateAsyncScope())
+            await AccountHelpers.VerifyEmailAsync(scope.ServiceProvider.GetRequiredService<AuthDbContext>(), email);
         var loginRes = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest(email, "SecureP@ss123"));
         Assert.Equal(HttpStatusCode.OK, loginRes.StatusCode);
         var body = await loginRes.Content.ReadFromJsonAsync<AuthResponse>();
@@ -149,6 +139,8 @@ public class AuthEndpointsTests : IClassFixture<CustomAuthFactory>, IAsyncLifeti
         var client = _factory.CreateClient();
         var email = $"bad{Guid.NewGuid():N}@test.com";
         await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(email, "SecureP@ss123", "Bad"));
+        await using (var scope = _factory.Services.CreateAsyncScope())
+            await AccountHelpers.VerifyEmailAsync(scope.ServiceProvider.GetRequiredService<AuthDbContext>(), email);
         var bad = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest(email, "wrong"));
         Assert.Equal(HttpStatusCode.Unauthorized, bad.StatusCode);
     }

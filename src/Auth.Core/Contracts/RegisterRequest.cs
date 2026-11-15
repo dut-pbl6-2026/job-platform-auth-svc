@@ -16,7 +16,8 @@ public record RegisterRequest(
     string? CompanyName = null
 );
 
-public record RegisterResponse(Guid UserId, string Message);
+// Deliberately carries no user id: registration must not reveal whether the email is taken.
+public record RegisterResponse(string Message);
 
 public record LoginRequest(
     [property: Required, NonWhitespace(ErrorMessage = "Email is required"), EmailAddress] string Email,
@@ -35,6 +36,8 @@ public record LogoutRequest(string? RefreshToken = null);
 public record UserMeDto(Guid Id, string Email, string FullName, string Role, Guid? CompanyId, bool IsActive);
 
 public record ForgotPasswordRequest([property: Required, NonWhitespace(ErrorMessage = "Email is required"), EmailAddress, MaxLength(256)] string Email);
+
+public record VerifyEmailRequest([property: Required, NonWhitespace(ErrorMessage = "Token is required")] string Token);
 
 public record ResetPasswordRequest(
     [property: Required, NonWhitespace(ErrorMessage = "Token is required")] string Token,
