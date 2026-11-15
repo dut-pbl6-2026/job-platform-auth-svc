@@ -34,6 +34,11 @@ var conn = builder.Configuration.GetConnectionString("AuthDb")
 if (AdminBootstrapCommand.IsInvoked(args))
     return await AdminBootstrapCommand.RunAsync(args, conn, Environment.GetEnvironmentVariable, Console.Out, Console.Error);
 
+// Schema migration is a separate deploy step: `migrate` applies pending migrations and exits.
+// The web host never migrates on startup.
+if (MigrateCommand.IsInvoked(args))
+    return await MigrateCommand.RunAsync(args, conn, Console.Out, Console.Error);
+
 builder.AddObservability();
 
 // Monitoring: expose OpenTelemetry metrics on /metrics (Prometheus scrape target).
@@ -305,24 +310,6 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
-
-// DB Auto-Migration
-using (var scope = app.Services.CreateScope())
-{
-    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
-    var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
-
-    try
-    {
-        db.Database.Migrate();
-        logger.LogInformation("DB migrated successfully");
-    }
-    catch (Exception ex)
-    {
-        logger.LogCritical(ex, "DB migration failed — shutting down application");
-        throw;
-    }
-}
 
 // Pipeline
 app.UseObservability();

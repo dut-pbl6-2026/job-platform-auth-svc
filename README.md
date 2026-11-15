@@ -59,7 +59,7 @@ curl -X POST http://localhost:5001/api/auth/verify-email -H 'Content-Type: appli
 curl -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123"}' # 200 {accessToken,refreshToken,user} (401 until verified)
 ```
 
-`auto-migrate` on startup, `UseExceptionHandler` + `ILogger`.
+`UseExceptionHandler` + `ILogger`. The host does not migrate on startup: run `migrate` as a separate step first (see below).
 
 Registration never reveals whether an email is taken: both cases return `202`. A new address gets a pending account and a verification link; an existing address gets a notice mail to its owner.
 
@@ -76,6 +76,16 @@ No connection string or secret is committed. Required environment variables:
 - `EMAIL_SENDER`: Development only. `log` writes each auth email, including its one-time link, to the console log and sends nothing (explicit opt-in). `smtp` forces SMTP. When unset, Development uses SMTP if `SMTP_HOST` is set and otherwise fails at startup, so emails are never silently dropped. `log` outside Development fails startup.
 - Auth emails go through a durable outbox (`EmailOutboxMessages` table). The registration or reset request writes its row in the same transaction as the account change, then returns without waiting for SMTP. A background worker sends due rows every 5 s. Failed sends retry with exponential backoff (1, 2, 4, 8, 16, then 30 minutes) and are given up after 8 failed attempts, with an Error log that names the row id. Rows are claimed with a lease, so several replicas can run the worker. Delivery is at-least-once: a crash after SMTP accepts a message but before the row is marked sent can send one duplicate.
 - `ForwardedHeaders__KnownNetworks`: the network the gateway runs in, comma-separated CIDRs or addresses (for example `10.0.0.0/8`). Only that peer may set `X-Forwarded-For`, so per-IP rate limits see the real client. **Required in Production.** Startup fails when it is empty or contains `0.0.0.0/0` or `::/0`. Use the gateway's exact subnet, not a wider one. Unset outside Production means forwarded headers are ignored.
+
+## Schema migration (separate deploy step)
+
+The web host never touches the schema on startup. Apply pending migrations with the one-off command, then start the service:
+
+```bash
+dotnet run --project src/Auth.Api -- migrate   # exit 0 when the database is up to date
+```
+
+In compose, the `auth-migrate` service runs this command and `auth` starts only after it completes successfully.
 
 ## Admin bootstrap (one-time)
 
