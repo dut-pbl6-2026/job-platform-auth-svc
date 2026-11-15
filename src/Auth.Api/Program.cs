@@ -4,19 +4,19 @@ using System.Net;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading.RateLimiting;
 using System.Net.Http.Headers;
 using Auth.Api.Bootstrap;
 using Auth.Api.Endpoints;
 using Auth.Api.Observability;
+using Auth.Api.RateLimiting;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using SharedKernel;
@@ -50,6 +50,16 @@ builder.Services.AddOpenTelemetry()
 // Config
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+// Access tokens last 15 minutes unless Jwt:ExpiresMinutes (or Jwt__ExpiresMinutes) sets another value.
+// The SharedKernel class default of 60 is never used by this service.
+const int DefaultAccessTokenMinutes = 15;
+builder.Services.Configure<JwtOptions>(o =>
+{
+    if (builder.Configuration["Jwt:ExpiresMinutes"] is null)
+        o.ExpiresMinutes = DefaultAccessTokenMinutes;
+});
+if (jwt.ExpiresMinutes <= 0)
+    throw new InvalidOperationException("Jwt:ExpiresMinutes must be a positive number of minutes");
 if (builder.Environment.IsDevelopment() && string.IsNullOrEmpty(jwt.Secret))
     jwt.Secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
@@ -112,13 +122,21 @@ if (!string.IsNullOrWhiteSpace(redisUrl))
     redisOptions.AbortOnConnectFail = false;
 
     builder.Services.AddStackExchangeRedisCache(o => o.ConfigurationOptions = redisOptions);
+
+    // Rate-limit counters share this Redis, so the limit holds across replicas. The middleware is built
+    // with the pipeline, so this connection is opened at startup.
+    builder.Services.AddSingleton<IRateLimitCounterStore>(_ =>
+        new RedisRateLimitCounterStore(ConnectionMultiplexer.Connect(redisOptions)));
 }
 else
 {
     if (builder.Environment.IsProduction())
-        throw new InvalidOperationException("REDIS_URL missing — required for access-token revocation (PORT-05 fail-fast)");
+        throw new InvalidOperationException("REDIS_URL missing — required for access-token revocation and shared rate limits (PORT-05 fail-fast)");
 
+    // Development and tests only: counters stay in this process. Production always requires REDIS_URL.
     builder.Services.AddDistributedMemoryCache();
+    builder.Services.TryAddSingleton(TimeProvider.System);
+    builder.Services.AddSingleton<IRateLimitCounterStore, LocalRateLimitCounterStore>();
 }
 
 // Application Services
@@ -262,35 +280,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("AdminOnly", policy => policy.RequireAuthenticatedUser().RequireRole("Admin"));
 
-// Rate Limiting (Fine-Grained)
-builder.Services.AddRateLimiter(options =>
-{
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-
-    options.OnRejected = async (context, token) =>
-    {
-        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
-        {
-            context.HttpContext.Response.Headers.RetryAfter =
-                ((int)Math.Max(1, retryAfter.TotalSeconds)).ToString();
-        }
-
-        context.HttpContext.Response.ContentType = "application/json";
-        await context.HttpContext.Response.WriteAsJsonAsync(new
-        {
-            status = 429,
-            title = "Too Many Requests",
-            detail = "Too many requests. Please try again later."
-        }, cancellationToken: token);
-    };
-
-    AddIpFixedWindowPolicy(options, "login", permitLimit: 10, window: TimeSpan.FromMinutes(15));
-    AddIpFixedWindowPolicy(options, "register", permitLimit: 10, window: TimeSpan.FromHours(1));
-    AddIpFixedWindowPolicy(options, "refresh", permitLimit: 30, window: TimeSpan.FromMinutes(15));
-    AddIpFixedWindowPolicy(options, "reset", permitLimit: 10, window: TimeSpan.FromHours(1));
-    AddIpFixedWindowPolicy(options, "forgot", permitLimit: 5, window: TimeSpan.FromHours(1));
-    AddIpFixedWindowPolicy(options, "verify", permitLimit: 10, window: TimeSpan.FromMinutes(15));
-});
+// Rate limiting (fine-grained, per IP): policies are declared on endpoints, counted by IRateLimitCounterStore.
+builder.Services.AddSingleton<IpRateLimiter>();
 
 // OpenAPI & Health
 // /health = static liveness (Render healthCheckPath). /health/ready = real dependency checks.
@@ -347,7 +338,7 @@ if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
 if (knownProxies.Length > 0)
     app.UseForwardedHeaders();
 app.UseCors("Default");
-app.UseRateLimiter();
+app.UseMiddleware<IpRateLimitMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -373,16 +364,6 @@ app.MapInternalUserEndpoints();
 
 app.Run();
 return 0;
-
-static void AddIpFixedWindowPolicy(RateLimiterOptions options, string name, int permitLimit, TimeSpan window) =>
-    options.AddPolicy(name, httpContext => RateLimitPartition.GetFixedWindowLimiter(
-        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-        factory: _ => new FixedWindowRateLimiterOptions
-        {
-            PermitLimit = permitLimit,
-            Window = window,
-            QueueLimit = 0
-        }));
 
 static long GetIssuedAt(ClaimsPrincipal principal)
 {

@@ -22,6 +22,12 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
 
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine").Build();
 
+    /// <summary>
+    /// Optional counter store. Setting one instance on several factories makes those hosts share one
+    /// set of per-IP counts. Null keeps the default per-process store.
+    /// </summary>
+    public IRateLimitCounterStore? RateLimitStore { get; init; }
+
     public RecordingEmailSender Emails { get; } = new();
 
     public string ConnectionString => _container.GetConnectionString();
@@ -40,6 +46,8 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         builder.UseSetting("SMTP_PASS", "test-pass");
         builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
         builder.ConfigureTestServices(services => services.AddSingleton<IEmailSender>(Emails));
+        if (RateLimitStore is not null)
+            builder.ConfigureTestServices(services => services.AddSingleton(RateLimitStore));
     }
 
     public async Task InitializeAsync()

@@ -24,6 +24,22 @@ public sealed class StartupConfigurationTests
     }
 
     [Fact]
+    public void Startup_Fails_InProduction_WhenRedisUrlMissing()
+    {
+        using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
+        {
+            ["Jwt:Secret"] = ValidSecret,
+            ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
+            ["WEB_URL"] = "https://app.example.test",
+            ["REDIS_URL"] = "",
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains("REDIS_URL missing", ex.ToString());
+    }
+
+    [Fact]
     public void Startup_Fails_WhenWebUrlMissing_OutsideDevelopment()
     {
         using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
