@@ -8,7 +8,7 @@ Auth service for **Vietnam Job Platform** (`pbl6`) — `dut-pbl6-2026`. `registe
 - `src/Auth.Core` — `User` `RefreshToken`
 - `src/Auth.Infrastructure` — `AuthDbContext` `Npgsql` `Migrations` `JwtTokenService` `BCrypt 12`
 - `tests` — `xunit` `PasswordHasher`
-- `local-feed` — `JobPlatform.SharedKernel 0.1.0` via `nuget.config`
+- GitHub Packages feed (`nuget.config`) — `JobPlatform.SharedKernel 0.3.1`; restore needs `GITHUB_TOKEN` with `read:packages`
 
 ## Prerequisites
 
