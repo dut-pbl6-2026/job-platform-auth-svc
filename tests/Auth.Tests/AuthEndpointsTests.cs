@@ -34,6 +34,10 @@ public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLi
         builder.UseSetting("SMTP_USER", "test-user");
         builder.UseSetting("SMTP_PASS", "test-pass");
         builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
+        // Per-caller internal tokens are required outside Development. Values are placeholders.
+        builder.UseSetting("AUTH_INTERNAL_TOKEN_FOR_NOTIF", RecordingAuthFactory.NotifInternalToken);
+        builder.UseSetting("JOB_INTERNAL_TOKEN_FOR_AUTH", RecordingAuthFactory.OutboundJobToken);
+        builder.UseSetting("APP_INTERNAL_TOKEN_FOR_AUTH", "test-app-internal-token-0123456789abcdef");
         builder.ConfigureTestServices(services =>
         {
             services.AddSingleton<Auth.Core.Interfaces.IEmailSender>(new RecordingEmailSender());

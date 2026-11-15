@@ -137,11 +137,24 @@ public sealed class RegistrationFlowTests : IClassFixture<RecordingAuthFactory>,
         Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
     }
 
+    [Theory]
+    [InlineData(RecordingAuthFactory.LegacySharedToken)]
+    [InlineData(RecordingAuthFactory.OutboundJobToken)]
+    public async Task InternalUserEmail_WithTokenIssuedToAnotherCaller_Returns401(string token)
+    {
+        var client = Client();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var res = await client.GetAsync($"/api/internal/users/{Guid.NewGuid()}/email");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+    }
+
     [Fact]
     public async Task InternalUserEmail_UnknownId_Returns404()
     {
         var client = Client();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", RecordingAuthFactory.InternalToken);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", RecordingAuthFactory.NotifInternalToken);
 
         var res = await client.GetAsync($"/api/internal/users/{Guid.NewGuid()}/email");
 
@@ -158,7 +171,7 @@ public sealed class RegistrationFlowTests : IClassFixture<RecordingAuthFactory>,
         await using (var scope = _factory.Services.CreateAsyncScope())
             userId = (await scope.ServiceProvider.GetRequiredService<AuthDbContext>().Users.SingleAsync(u => u.Email == email)).Id;
 
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", RecordingAuthFactory.InternalToken);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", RecordingAuthFactory.NotifInternalToken);
         var res = await client.GetAsync($"/api/internal/users/{userId}/email");
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);

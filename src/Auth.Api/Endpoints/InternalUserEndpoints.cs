@@ -21,7 +21,8 @@ public static class InternalUserEndpoints
             CancellationToken ct) =>
         {
             // Token is checked before the lookup, so unauthenticated callers learn nothing about ids.
-            var denied = InternalServiceAuth.Authorize(ctx, config, loggerFactory.CreateLogger("InternalUserEndpoints"));
+            var denied = InternalServiceAuth.Authorize(
+                ctx, config, InternalServiceAuth.NotifCallerTokenKey, loggerFactory.CreateLogger("InternalUserEndpoints"));
             if (denied is not null)
                 return denied;
 

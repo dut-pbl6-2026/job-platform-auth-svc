@@ -5,26 +5,30 @@ namespace Auth.Api.Security;
 
 /// <summary>
 /// Bearer-token check for service-to-service endpoints under <c>/api/internal/*</c>. Mirrors the
-/// job-svc / app-svc helper (separate repos, so no shared code yet). Callers present
-/// <c>Authorization: Bearer &lt;INTERNAL_SERVICE_TOKEN&gt;</c>. Fails closed: an unconfigured token
-/// never makes an endpoint public.
+/// job-svc / app-svc helper (separate repos, so no shared code yet). Each caller has its own token:
+/// the endpoint names the configuration key it expects, and a token issued to another caller is
+/// rejected. Callers present <c>Authorization: Bearer &lt;token&gt;</c>. Fails closed: an unconfigured
+/// token never makes an endpoint public.
 /// </summary>
 public static class InternalServiceAuth
 {
-    /// <summary>Configuration/env key holding the shared internal service token.</summary>
-    public const string TokenConfigKey = "INTERNAL_SERVICE_TOKEN";
+    /// <summary>Token notif-svc presents on <c>GET /api/internal/users/{id}/email</c>.</summary>
+    public const string NotifCallerTokenKey = "AUTH_INTERNAL_TOKEN_FOR_NOTIF";
 
     private const string BearerPrefix = "Bearer ";
 
-    /// <summary>Returns <c>null</c> when the request carries the configured token, otherwise a 401 result.</summary>
-    public static IResult? Authorize(HttpContext ctx, IConfiguration config, ILogger logger)
+    /// <summary>
+    /// Returns <c>null</c> when the request carries the token configured under <paramref name="expectedTokenKey"/>,
+    /// otherwise a 401 result.
+    /// </summary>
+    public static IResult? Authorize(HttpContext ctx, IConfiguration config, string expectedTokenKey, ILogger logger)
     {
-        var expected = config[TokenConfigKey];
+        var expected = config[expectedTokenKey];
         if (string.IsNullOrWhiteSpace(expected))
         {
             logger.LogError(
                 "{TokenKey} is not configured. Returning 401 to avoid exposing the endpoint.",
-                TokenConfigKey);
+                expectedTokenKey);
             return Unauthorized();
         }
 

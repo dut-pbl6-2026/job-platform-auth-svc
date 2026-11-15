@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Net.Http.Headers;
+using Auth.Api.Security;
 using Auth.Api.Bootstrap;
 using Auth.Api.Endpoints;
 using Auth.Api.Observability;
@@ -189,13 +190,19 @@ if (string.IsNullOrWhiteSpace(appServiceUrl))
 }
 appServiceUrl = appServiceUrl.Trim().TrimEnd('/') + "/"; // normalize trailing slash (AGENTS.md: BaseAddress must end with /)
 
-var jobInternalToken = builder.Configuration["JOB_SERVICE_INTERNAL_TOKEN"];
-var appInternalToken = builder.Configuration["APP_SERVICE_INTERNAL_TOKEN"];
-if ((builder.Environment.IsProduction() || builder.Environment.IsStaging()) &&
-    (string.IsNullOrWhiteSpace(jobInternalToken) || string.IsNullOrWhiteSpace(appInternalToken)))
+// Per-caller tokens: auth-svc presents these to job-svc and app-svc (/api/internal/stats). Each
+// callee accepts only the token issued to auth-svc. Outside Development a missing value fails startup.
+var jobInternalToken = builder.Configuration["JOB_INTERNAL_TOKEN_FOR_AUTH"];
+var appInternalToken = builder.Configuration["APP_INTERNAL_TOKEN_FOR_AUTH"];
+// Accepted from notif-svc on GET /api/internal/users/{id}/email.
+var notifCallerToken = builder.Configuration[InternalServiceAuth.NotifCallerTokenKey];
+if (!builder.Environment.IsDevelopment() &&
+    (string.IsNullOrWhiteSpace(jobInternalToken)
+     || string.IsNullOrWhiteSpace(appInternalToken)
+     || string.IsNullOrWhiteSpace(notifCallerToken)))
 {
     throw new InvalidOperationException(
-        "JOB_SERVICE_INTERNAL_TOKEN and APP_SERVICE_INTERNAL_TOKEN are required for admin stats aggregation");
+        "JOB_INTERNAL_TOKEN_FOR_AUTH, APP_INTERNAL_TOKEN_FOR_AUTH and AUTH_INTERNAL_TOKEN_FOR_NOTIF are required outside Development");
 }
 
 builder.Services
