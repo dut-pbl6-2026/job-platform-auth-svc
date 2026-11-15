@@ -1,19 +1,12 @@
+using Auth.Core.Entities;
+
 namespace Auth.Core.Interfaces;
 
 /// <summary>
-/// Outbound auth email. Implementations must not throw on delivery failure: callers
-/// must look the same to the client whether or not an address has an account.
+/// Delivers one outbox message. Implementations throw when delivery fails: the outbox dispatcher
+/// records the failure, keeps the row and retries it later. Nothing here is called from a request.
 /// </summary>
 public interface IEmailSender
 {
-    Task SendPasswordResetAsync(string email, string resetLink, CancellationToken ct = default);
-
-    /// <summary>Sent to a pending account's address with the one-time verification link.</summary>
-    Task SendEmailVerificationAsync(string email, string verificationLink, CancellationToken ct = default);
-
-    /// <summary>Sent to the owner of an existing account when someone registers with their address.</summary>
-    Task SendDuplicateRegistrationNoticeAsync(string email, CancellationToken ct = default);
-
-    /// <summary>Sent when a password reset is requested for an address with no account (keeps outbound work equal).</summary>
-    Task SendUnknownAccountPasswordResetNoticeAsync(string email, CancellationToken ct = default);
+    Task SendAsync(EmailOutboxMessage message, CancellationToken ct = default);
 }

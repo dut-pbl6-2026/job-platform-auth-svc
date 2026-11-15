@@ -52,6 +52,7 @@ public sealed class RegistrationFlowTests : IClassFixture<RecordingAuthFactory>,
     {
         var email = UniqueEmail("pending");
         await RegisterAsync(Client(), email);
+        await _factory.DeliverPendingEmailsAsync();
 
         var sent = _factory.Emails.Single("EmailVerification");
         Assert.Equal(email, sent.Email);
@@ -67,9 +68,11 @@ public sealed class RegistrationFlowTests : IClassFixture<RecordingAuthFactory>,
         var client = Client();
         var email = UniqueEmail("owner");
         await RegisterAsync(client, email);
+        await _factory.DeliverPendingEmailsAsync();
         _factory.Emails.Clear();
 
         await RegisterAsync(client, email);
+        await _factory.DeliverPendingEmailsAsync();
 
         Assert.Equal(["DuplicateRegistrationNotice"], _factory.Emails.Sent.Select(e => e.Kind));
     }
@@ -95,6 +98,7 @@ public sealed class RegistrationFlowTests : IClassFixture<RecordingAuthFactory>,
         var client = Client();
         var email = UniqueEmail("activate");
         await RegisterAsync(client, email);
+        await _factory.DeliverPendingEmailsAsync();
         var token = RecordingEmailSender.TokenFrom(_factory.Emails.Single("EmailVerification").Link!);
 
         var verify = await client.PostAsJsonAsync("/api/auth/verify-email", new VerifyEmailRequest(token));

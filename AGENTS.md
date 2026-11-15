@@ -57,7 +57,7 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## Security (SRS 6 `SEC-*`)
 
-`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained per IP (fixed window in Redis `REDIS_URL`, shared across replicas, fail-open on store error, 429): login 10/15min, register 10/h, refresh 30/15min, reset 10/h, forgot-password 5/h`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
+`SEC-03 bcrypt WorkFactor=12` via `BCrypt.Net-Next 4.0.3` in `PasswordHasherService.cs: Hash/Verify` only, `SEC-09 refresh SHA256 indexed daily purge`, `SEC-04 TLS1.2+`, `SEC-05 SQLi param + XSS encode + CSRF token`, `SEC-06 layered rate limiting: gateway coarse per-IP 600/min (DDoS/bot) + auth-svc fine-grained per IP (fixed window in Redis `REDIS_URL`, shared across replicas, 500 ms timeout, fail-open on store error, 429): login 10/15min, register 10/h, refresh 30/15min, reset 10/h, forgot-password 5/h`, direct-to-service bypass loses DDoS layer (private networking once off free tier), `SEC-07 audit log auth`, `SEC-08 CV private` N/A for auth, `SEC-10 CORS trusted` via gateway.
 
 ## 2026 best practice (NFR `MAINT`)
 
@@ -67,9 +67,17 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 
 ## Outbound mail (env)
 
+- Auth emails are outbox rows (`EmailOutboxMessages`, `src/Auth.Infrastructure/Services/EmailOutboxDispatcher.cs`). The request writes the row in the same `SaveChanges` as the account change and never waits for SMTP. `EmailOutboxWorker` polls every 5 s. Rows are claimed with `FOR UPDATE SKIP LOCKED` in a short transaction plus a 10-minute lease, then sent outside the transaction. Retry: 1, 2, 4, 8, 16, 30, 30 min; give up after `EmailOutboxRetryPolicy.MaxAttempts` (8) with an Error log naming the row id. The one-time link is cleared on sent or given up. Delivery is at-least-once.
+- `IEmailSender.SendAsync` throws on failure. Never swallow a send error there: the dispatcher must see it to keep the row.
+
 - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` required outside Development (startup throws, naming missing keys only). Optional `SMTP_PORT` (587), `SMTP_SSL` (true). Gmail: `smtp.gmail.com`, App Password, `SMTP_FROM` = `SMTP_USER`.
 - `EMAIL_SENDER` (Development only): `log` = explicit opt-in to console logging (no delivery, link logged); `smtp` = force SMTP. Unset: SMTP if `SMTP_HOST` set, else startup throws. `log` outside Development throws.
 - Selection: `src/Auth.Infrastructure/Services/EmailSenderSelection.cs` (resolved eagerly in `Program.cs`). Logs carry masked emails (`LogRedaction.MaskEmail`) or user ids, never bodies or tokens.
+
+## Forwarded client IPs
+
+- `ForwardedHeaders__KnownNetworks` lists the gateway's network (CIDR or address, comma-separated). Only that peer's `X-Forwarded-For` is trusted (`ForwardLimit=1`, the entry the gateway appended). Required in Production: startup fails when it is empty or contains `0.0.0.0/0` or `::/0`. Production value: the gateway's subnet, for example `10.0.0.0/8` on the private network. Set the exact subnet in the deploy environment.
+- Implementation: `src/Auth.Api/Networking/ForwardedProxyTrust.cs` (same rule as the gateway's `ForwardedProxyTrust`).
 
 ## Admin bootstrap (one-time)
 

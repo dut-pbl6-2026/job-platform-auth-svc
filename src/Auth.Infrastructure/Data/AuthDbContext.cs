@@ -11,6 +11,7 @@ public class AuthDbContext : DbContext
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<EmailVerificationToken> EmailVerificationTokens => Set<EmailVerificationToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<EmailOutboxMessage> EmailOutboxMessages => Set<EmailOutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -54,6 +55,18 @@ public class AuthDbContext : DbContext
             e.HasIndex(x => x.UserId);
             e.HasIndex(x => x.ExpiresAt);
             e.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
+        });
+        b.Entity<EmailOutboxMessage>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(64).IsRequired();
+            e.Property(x => x.Recipient).HasMaxLength(256).IsRequired();
+            e.Property(x => x.Link).HasMaxLength(2048);
+            e.Property(x => x.LastError).HasMaxLength(500);
+            // Partial index: the dispatcher only scans rows that are still pending.
+            e.HasIndex(x => x.NextAttemptAt)
+                .HasDatabaseName("IX_EmailOutboxMessages_Pending")
+                .HasFilter("\"SentAt\" IS NULL AND \"GaveUpAt\" IS NULL");
         });
         b.Entity<AuditLog>(e =>
         {

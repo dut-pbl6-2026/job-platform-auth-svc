@@ -1,11 +1,17 @@
 using System.Collections.Concurrent;
+using System.Net;
+using Auth.Core.Entities;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
+using Auth.Infrastructure.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Testcontainers.PostgreSql;
 
 namespace Auth.Tests.Fixtures;
@@ -14,6 +20,8 @@ namespace Auth.Tests.Fixtures;
 /// Full API host against a real Postgres container, with outbound email captured in memory so
 /// tests can read the one-time links the service would have mailed. One instance per test class,
 /// so the per-IP rate-limit buckets are not shared between classes.
+/// The outbox worker is removed from this host: tests deliver pending rows with
+/// <see cref="DeliverPendingEmailsAsync"/>, so each run is deterministic.
 /// </summary>
 public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
@@ -28,9 +36,20 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
     /// </summary>
     public IRateLimitCounterStore? RateLimitStore { get; init; }
 
+    /// <summary>Value for ForwardedHeaders:KnownNetworks. Null leaves it unset (non-Production).</summary>
+    public string? ForwardedKnownNetworks { get; init; }
+
+    /// <summary>
+    /// Peer address the test server reports for every request. TestServer has no real socket, so a
+    /// forwarded-header test sets the peer explicitly to decide whether that peer is trusted.
+    /// </summary>
+    public IPAddress? PeerAddress { get; init; }
+
     public RecordingEmailSender Emails { get; } = new();
 
     public string ConnectionString => _container.GetConnectionString();
+
+    public EmailOutboxDispatcher Dispatcher => Services.GetRequiredService<EmailOutboxDispatcher>();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -45,9 +64,25 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         builder.UseSetting("SMTP_USER", "test-user");
         builder.UseSetting("SMTP_PASS", "test-pass");
         builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
-        builder.ConfigureTestServices(services => services.AddSingleton<IEmailSender>(Emails));
+        if (ForwardedKnownNetworks is not null)
+            builder.UseSetting("ForwardedHeaders:KnownNetworks", ForwardedKnownNetworks);
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton<IEmailSender>(Emails);
+            EmailOutboxWorkerRemoval.Remove(services);
+        });
         if (RateLimitStore is not null)
             builder.ConfigureTestServices(services => services.AddSingleton(RateLimitStore));
+        if (PeerAddress is not null)
+            builder.ConfigureServices(services => services.AddSingleton<IStartupFilter>(new PeerAddressFilter(PeerAddress)));
+    }
+
+    /// <summary>Sends every due outbox row now, the same as the worker would on its next poll.</summary>
+    public async Task DeliverPendingEmailsAsync()
+    {
+        while ((await Dispatcher.DispatchOnceAsync(DateTime.UtcNow)).Claimed > 0)
+        {
+        }
     }
 
     public async Task InitializeAsync()
@@ -79,42 +114,80 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         await _container.DisposeAsync();
         await base.DisposeAsync();
     }
+
+    private sealed class PeerAddressFilter(IPAddress peer) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use(async (context, nextMiddleware) =>
+            {
+                context.Connection.RemoteIpAddress = peer;
+                await nextMiddleware();
+            });
+            next(app);
+        };
+    }
+}
+
+/// <summary>Removes the outbox worker from a test host (tests deliver rows explicitly).</summary>
+public static class EmailOutboxWorkerRemoval
+{
+    public static void Remove(IServiceCollection services)
+    {
+        var workers = services
+            .Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmailOutboxWorker))
+            .ToList();
+        foreach (var worker in workers)
+            services.Remove(worker);
+    }
 }
 
 public sealed record SentEmail(string Kind, string Email, string? Link);
 
+/// <summary>
+/// Stands in for SMTP in tests. Records each delivered message; can fail the next sends and can hold a
+/// send open, so concurrency tests control exactly when a delivery finishes.
+/// </summary>
 public sealed class RecordingEmailSender : IEmailSender
 {
     private readonly ConcurrentQueue<SentEmail> _sent = new();
+    private readonly object _gate = new();
+    private int _failuresRemaining;
 
     public IReadOnlyList<SentEmail> Sent => _sent.ToArray();
 
+    /// <summary>Runs before each send; a test can block here to hold a delivery open.</summary>
+    public Func<CancellationToken, Task>? BeforeSend { get; set; }
+
     public SentEmail Single(string kind) => _sent.Where(e => e.Kind == kind).Single();
 
-    public void Clear() => _sent.Clear();
-
-    public Task SendPasswordResetAsync(string email, string resetLink, CancellationToken ct = default)
+    public void Clear()
     {
-        _sent.Enqueue(new SentEmail("PasswordReset", email, resetLink));
-        return Task.CompletedTask;
+        _sent.Clear();
+        lock (_gate) _failuresRemaining = 0;
+        BeforeSend = null;
     }
 
-    public Task SendEmailVerificationAsync(string email, string verificationLink, CancellationToken ct = default)
+    public void FailNextSends(int count)
     {
-        _sent.Enqueue(new SentEmail("EmailVerification", email, verificationLink));
-        return Task.CompletedTask;
+        lock (_gate) _failuresRemaining = count;
     }
 
-    public Task SendDuplicateRegistrationNoticeAsync(string email, CancellationToken ct = default)
+    public async Task SendAsync(EmailOutboxMessage message, CancellationToken ct = default)
     {
-        _sent.Enqueue(new SentEmail("DuplicateRegistrationNotice", email, null));
-        return Task.CompletedTask;
-    }
+        if (BeforeSend is { } hook)
+            await hook(ct);
 
-    public Task SendUnknownAccountPasswordResetNoticeAsync(string email, CancellationToken ct = default)
-    {
-        _sent.Enqueue(new SentEmail("UnknownAccountResetNotice", email, null));
-        return Task.CompletedTask;
+        bool fail;
+        lock (_gate)
+        {
+            fail = _failuresRemaining > 0;
+            if (fail) _failuresRemaining--;
+        }
+        if (fail)
+            throw new InvalidOperationException("Simulated SMTP failure for test");
+
+        _sent.Enqueue(new SentEmail(message.Kind.ToString(), message.Recipient, message.Link));
     }
 
     /// <summary>Extracts the plain token from a link such as <c>.../verify-email?token=...</c>.</summary>

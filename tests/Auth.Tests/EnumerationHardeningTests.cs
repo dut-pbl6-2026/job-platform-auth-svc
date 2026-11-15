@@ -44,9 +44,9 @@ public class EnumerationHardeningTests : IAsyncLifetime
 
     private static JwtTokenService Tokens() => new(Options.Create(Jwt));
 
-    private AuthService Service(AuthDbContext db, IPasswordHasher? hasher = null, IEmailSender? emails = null, ITokenRevocationStore? revocation = null) =>
+    private AuthService Service(AuthDbContext db, IPasswordHasher? hasher = null, ITokenRevocationStore? revocation = null) =>
         new(db, hasher ?? new PasswordHasherService(), Tokens(), NullLogger<AuthService>.Instance,
-            emails ?? new Mock<IEmailSender>().Object, Config, revocation ?? new Mock<ITokenRevocationStore>().Object);
+            Config, revocation ?? new Mock<ITokenRevocationStore>().Object);
 
     private static Mock<IPasswordHasher> FakeHasher(string dummy = "dummy-hash")
     {
@@ -119,32 +119,32 @@ public class EnumerationHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ForgotPassword_UnknownEmail_SendsOneNoticeAndNoToken()
+    public async Task ForgotPassword_UnknownEmail_QueuesOneNoticeAndNoToken()
     {
         using var db = CreateDb();
-        var emails = new Mock<IEmailSender>();
 
-        var res = await Service(db, emails: emails.Object).ForgotPasswordAsync(new ForgotPasswordRequest("ghost@b.com"));
+        var res = await Service(db).ForgotPasswordAsync(new ForgotPasswordRequest("ghost@b.com"));
 
         Assert.True(res.IsSuccess);
-        emails.Verify(e => e.SendUnknownAccountPasswordResetNoticeAsync("ghost@b.com", It.IsAny<CancellationToken>()), Times.Once);
-        emails.Verify(e => e.SendPasswordResetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        var queued = await db.EmailOutboxMessages.SingleAsync();
+        Assert.Equal(EmailKind.UnknownAccountResetNotice, queued.Kind);
+        Assert.Null(queued.Link);
         Assert.Equal(0, await db.PasswordResetTokens.CountAsync());
     }
 
     [Fact]
-    public async Task ForgotPassword_KnownEmail_SendsOneResetLinkAndStoresToken()
+    public async Task ForgotPassword_KnownEmail_QueuesOneResetLinkAndStoresToken()
     {
         using var db = CreateDb();
         db.Users.Add(new User("real@b.com", "stored-hash", "Real"));
         await db.SaveChangesAsync();
-        var emails = new Mock<IEmailSender>();
 
-        await Service(db, emails: emails.Object).ForgotPasswordAsync(new ForgotPasswordRequest("real@b.com"));
+        await Service(db).ForgotPasswordAsync(new ForgotPasswordRequest("real@b.com"));
 
-        emails.Verify(e => e.SendPasswordResetAsync("real@b.com", It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
-        emails.Verify(e => e.SendUnknownAccountPasswordResetNoticeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        Assert.Equal(1, await db.PasswordResetTokens.CountAsync());
+        var queued = await db.EmailOutboxMessages.SingleAsync();
+        Assert.Equal(EmailKind.PasswordReset, queued.Kind);
+        Assert.StartsWith("http://localhost:5173/reset-password?token=", queued.Link);
+        Assert.Equal(queued.LinkExpiresAt, (await db.PasswordResetTokens.SingleAsync()).ExpiresAt);
     }
 
     // ── Verification token policy ───────────────────────────────────────
