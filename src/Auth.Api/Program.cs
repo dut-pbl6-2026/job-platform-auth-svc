@@ -158,27 +158,15 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAdminService, AdminService>();
 builder.Services.AddHostedService<ExpiredTokenPurgeService>();
 
-// Outbound Client: Company Validation
+// Outbound Client: job-svc base URL (company stats and invite codes)
 var jobBaseUrl = builder.Configuration["JOB_SERVICE_URL"] ?? builder.Configuration["COMPANY_SERVICE_URL"];
 if (string.IsNullOrWhiteSpace(jobBaseUrl))
 {
     if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
-        throw new InvalidOperationException("JOB_SERVICE_URL missing — required for Recruiter companyId validation (PORT-05)");
+        throw new InvalidOperationException("JOB_SERVICE_URL missing — required for invite-code and stats calls");
     jobBaseUrl = "http://localhost:5002";
 }
 jobBaseUrl = jobBaseUrl.Trim().TrimEnd('/') + "/";
-
-builder.Services
-    .AddHttpClient<ICompanyValidationClient, HttpCompanyValidationClient>(c =>
-    {
-        c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
-        c.Timeout = Timeout.InfiniteTimeSpan;
-    })
-    .AddStandardResilienceHandler(o =>
-    {
-        o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3);
-        o.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(10);
-    });
 
 var appServiceUrl = builder.Configuration["APP_SERVICE_URL"];
 if (string.IsNullOrWhiteSpace(appServiceUrl))
@@ -203,6 +191,17 @@ if (!builder.Environment.IsDevelopment() &&
     throw new InvalidOperationException(
         "JOB_INTERNAL_TOKEN_FOR_AUTH, APP_INTERNAL_TOKEN_FOR_AUTH and AUTH_INTERNAL_TOKEN_FOR_NOTIF are required outside Development");
 }
+
+// Outbound Client: invite codes (SRS AUTH-01-09). Same per-caller token as the stats client.
+// No resilience retry: redeem is not idempotent, so a retry after a lost response would report a valid code as used.
+builder.Services
+    .AddHttpClient<IInviteCodeClient, HttpInviteCodeClient>(c =>
+    {
+        c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
+        c.Timeout = TimeSpan.FromSeconds(5);
+        if (!string.IsNullOrWhiteSpace(jobInternalToken))
+            c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jobInternalToken);
+    });
 
 builder.Services
     .AddHttpClient<IJobServiceClient, JobServiceClient>(c =>

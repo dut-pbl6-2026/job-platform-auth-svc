@@ -36,13 +36,13 @@ public class AuthServiceTests : IAsyncLifetime
 
     private AuthDbContext CreateDb() => _fixture.CreateDbContext();
 
-    private AuthService CreateService(AuthDbContext db, ICompanyValidationClient? companyClient = null, IPasswordHasher? hasher = null, ITokenRevocationStore? revocationStore = null)
+    private AuthService CreateService(AuthDbContext db, IInviteCodeClient? inviteCodes = null, IPasswordHasher? hasher = null, ITokenRevocationStore? revocationStore = null)
     {
         hasher ??= new PasswordHasherService();
         var jwt = new JwtTokenService(Options.Create(JwtOptions), TestSigningKeys.Keys);
         revocationStore ??= new Mock<ITokenRevocationStore>().Object;
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["WEB_URL"] = "http://localhost:5173" }).Build();
-        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, cfg, revocationStore, companyClient);
+        return new AuthService(db, hasher, jwt, NullLogger<AuthService>.Instance, cfg, revocationStore, inviteCodes);
     }
 
 
