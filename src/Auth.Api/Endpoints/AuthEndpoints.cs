@@ -3,6 +3,7 @@ using Auth.Api.Filters;
 using Auth.Core.Contracts;
 using Auth.Api.RateLimiting;
 using Auth.Core.Interfaces;
+using Auth.Core.Security;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Auth.Api.Endpoints;
@@ -55,23 +56,72 @@ public static class AuthEndpoints
         .Produces<RegisterResponse>(202)
         .ProducesValidationProblem();
 
+        group.MapPost("/register-company", async (
+            RegisterCompanyRequest req,
+            ICompanySignUpService svc,
+            CancellationToken ct) =>
+        {
+            var status = await svc.RegisterAsync(req, ct);
+            return status switch
+            {
+                CompanySignUpStatus.WorkEmailRequired => Results.Problem(
+                    statusCode: 422,
+                    title: "Work email required",
+                    detail: CompanySignUpErrors.WorkEmailRequiredMessage,
+                    extensions: new Dictionary<string, object?> { ["errorCode"] = CompanySignUpErrors.WorkEmailRequiredCode }),
+                CompanySignUpStatus.WeakPassword => Results.ValidationProblem(
+                    new Dictionary<string, string[]> { ["Password"] = ["Password must be " + PasswordPolicy.Description] }),
+                CompanySignUpStatus.Unavailable => Results.Problem(
+                    statusCode: 503,
+                    title: "Service unavailable",
+                    detail: CompanySignUpErrors.ServiceUnavailableMessage),
+                // The same 202 and body for every outcome (AUTH-01-10, backlog A13).
+                _ => Results.Accepted(value: new RegisterResponse(CompanySignUpMessages.SignUpAccepted)),
+            };
+        })
+        .WithName("RegisterCompany")
+        .WithSummary("Company self-serve sign-up with a work email; the same 202 for every outcome (5/IP/h)")
+        .AddEndpointFilter<ValidationFilter<RegisterCompanyRequest>>()
+        .WithMetadata(IpRateLimitPolicy.CompanySignUp)
+        .Produces<RegisterResponse>(202)
+        .ProducesProblem(422)
+        .ProducesProblem(503)
+        .ProducesValidationProblem();
+
         group.MapPost("/verify-email", async (
             VerifyEmailRequest req,
             IAuthService svc,
+            ICompanySignUpService companySignUps,
             CancellationToken ct) =>
         {
+            // The token belongs to a company sign-up (AUTH-01-10, AUTH-01-11) or, failing that, to a personal account.
+            var company = await companySignUps.VerifyAsync(req.Token, ct);
+            switch (company)
+            {
+                case CompanyVerifyOutcome.Processed:
+                    return Results.Ok(new { message = CompanySignUpMessages.VerificationProcessed });
+                case CompanyVerifyOutcome.Invalid:
+                    return VerificationTokenInvalid();
+                case CompanyVerifyOutcome.Unavailable:
+                    return Results.Problem(
+                        statusCode: 503,
+                        title: "Service unavailable",
+                        detail: CompanySignUpErrors.ServiceUnavailableMessage);
+            }
+
             var result = await svc.VerifyEmailAsync(req.Token, ct);
             if (!result.IsSuccess)
-                return Results.Problem(statusCode: 400, detail: result.Error);
+                return VerificationTokenInvalid();
 
             return Results.Ok(new { message = "Email verified. You can now log in." });
         })
         .WithName("VerifyEmail")
-        .WithSummary("Activate a pending account with the emailed one-time link token (24h)")
+        .WithSummary("Complete a company sign-up or activate a personal account with the emailed one-time link (24h)")
         .AddEndpointFilter<ValidationFilter<VerifyEmailRequest>>()
         .WithMetadata(IpRateLimitPolicy.Verify)
         .Produces(200)
-        .ProducesProblem(400)
+        .ProducesProblem(422)
+        .ProducesProblem(503)
         .ProducesValidationProblem();
 
         group.MapPost("/resend-verification", async (
@@ -229,4 +279,11 @@ public static class AuthEndpoints
 
         return app;
     }
+
+    /// <summary>422 for every bad, expired or used verification token (AUTH-01-11). One body for all of them.</summary>
+    private static IResult VerificationTokenInvalid() => Results.Problem(
+        statusCode: 422,
+        title: "Invalid verification token",
+        detail: CompanySignUpErrors.VerificationTokenInvalidMessage,
+        extensions: new Dictionary<string, object?> { ["errorCode"] = CompanySignUpErrors.VerificationTokenInvalidCode });
 }

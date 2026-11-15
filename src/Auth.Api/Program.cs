@@ -11,6 +11,7 @@ using Auth.Api.Observability;
 using Auth.Api.Networking;
 using Auth.Api.RateLimiting;
 using Auth.Core.Interfaces;
+using Auth.Core.Security;
 using Auth.Infrastructure.Data;
 using Auth.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -156,6 +157,10 @@ builder.Services.AddHostedService<EmailOutboxWorker>();
 
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAdminService, AdminService>();
+builder.Services.AddScoped<ICompanySignUpService, CompanySignUpService>();
+// Free email providers that company sign-up rejects (AUTH-01-11). FREE_EMAIL_DOMAINS adds to the built-in list.
+builder.Services.AddSingleton(new WorkEmailPolicy(
+    (builder.Configuration["FREE_EMAIL_DOMAINS"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
 builder.Services.AddHostedService<ExpiredTokenPurgeService>();
 
 // Outbound Client: job-svc base URL (company stats and invite codes)
@@ -196,6 +201,17 @@ if (!builder.Environment.IsDevelopment() &&
 // No resilience retry: redeem is not idempotent, so a retry after a lost response would report a valid code as used.
 builder.Services
     .AddHttpClient<IInviteCodeClient, HttpInviteCodeClient>(c =>
+    {
+        c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
+        c.Timeout = TimeSpan.FromSeconds(5);
+        if (!string.IsNullOrWhiteSpace(jobInternalToken))
+            c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", jobInternalToken);
+    });
+
+// Outbound Client: job-svc company directory (AUTH-01-10, AUTH-01-12). Same per-caller token; no retry, the
+// create calls are not idempotent and a failed lookup fails the sign-up closed (503).
+builder.Services
+    .AddHttpClient<ICompanyDirectoryClient, HttpCompanyDirectoryClient>(c =>
     {
         c.BaseAddress = new Uri(jobBaseUrl, UriKind.Absolute);
         c.Timeout = TimeSpan.FromSeconds(5);

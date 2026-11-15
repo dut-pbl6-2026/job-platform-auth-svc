@@ -10,6 +10,7 @@ public class AuthDbContext : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<EmailVerificationToken> EmailVerificationTokens => Set<EmailVerificationToken>();
+    public DbSet<PendingCompanySignup> PendingCompanySignups => Set<PendingCompanySignup>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<EmailOutboxMessage> EmailOutboxMessages => Set<EmailOutboxMessage>();
 
@@ -56,6 +57,20 @@ public class AuthDbContext : DbContext
             e.HasIndex(x => x.UserId);
             e.HasIndex(x => x.ExpiresAt);
             e.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
+        });
+        b.Entity<PendingCompanySignup>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // One pending sign-up per address (a newer attempt replaces the older one) and one row per link token.
+            e.HasIndex(x => x.Email).IsUnique();
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.ExpiresAt);
+            e.Property(x => x.CompanyName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.TaxCode).HasMaxLength(32);
+            e.Property(x => x.Email).HasMaxLength(256).IsRequired();
+            e.Property(x => x.PasswordHash).IsRequired();
+            e.Property(x => x.FullName).HasMaxLength(128).IsRequired();
+            e.Property(x => x.TokenHash).HasMaxLength(128).IsRequired();
         });
         b.Entity<EmailOutboxMessage>(e =>
         {

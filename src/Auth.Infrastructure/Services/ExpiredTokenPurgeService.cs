@@ -38,7 +38,8 @@ public class ExpiredTokenPurgeService : BackgroundService
         var expiredRefresh = await db.RefreshTokens.Where(x => x.ExpiresAt < now).ExecuteDeleteAsync(ct);
         var expiredReset = await db.PasswordResetTokens.Where(x => x.ExpiresAt < now || x.IsUsed).ExecuteDeleteAsync(ct);
         var expiredVerification = await db.EmailVerificationTokens.Where(x => x.ExpiresAt < now || x.IsUsed).ExecuteDeleteAsync(ct);
-        if (expiredRefresh > 0 || expiredReset > 0 || expiredVerification > 0)
-            _logger.LogInformation("AUDIT Purge ExpiredRefresh={Refresh} ResetTokens={Reset} VerificationTokens={Verification}", expiredRefresh, expiredReset, expiredVerification);
+        var expiredCompanySignups = await db.PendingCompanySignups.Where(x => x.ExpiresAt < now).ExecuteDeleteAsync(ct);
+        if (expiredRefresh > 0 || expiredReset > 0 || expiredVerification > 0 || expiredCompanySignups > 0)
+            _logger.LogInformation("AUDIT Purge ExpiredRefresh={Refresh} ResetTokens={Reset} VerificationTokens={Verification} CompanySignups={CompanySignups}", expiredRefresh, expiredReset, expiredVerification, expiredCompanySignups);
     }
 }

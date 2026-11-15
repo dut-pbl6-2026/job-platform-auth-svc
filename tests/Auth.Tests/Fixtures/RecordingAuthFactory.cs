@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using Auth.Api.Security;
 using Auth.Core.Entities;
 using Auth.Core.Interfaces;
 using Auth.Infrastructure.Data;
@@ -31,6 +32,8 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
     public const string OutboundJobToken = "test-job-internal-token-0123456789abcdef";
     /// <summary>Pre-split shared token. Must no longer be accepted anywhere under <c>/api/internal/*</c>.</summary>
     public const string LegacySharedToken = "test-legacy-shared-token-0123456789abcdef";
+    /// <summary>Token job-svc presents to auth-svc's <c>/api/internal/users/{id}/link-company</c> (AUTH_INTERNAL_TOKEN_FOR_JOB).</summary>
+    public const string JobCallerInternalToken = "test-job-caller-internal-token-0123456789abcdef";
 
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine").Build();
 
@@ -51,6 +54,9 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
 
     public RecordingEmailSender Emails { get; } = new();
 
+    /// <summary>job-svc company endpoints. Replaces the HTTP client, so no test reaches a real job-svc.</summary>
+    public FakeCompanyDirectory CompanyDirectory { get; } = new();
+
     public string ConnectionString => _container.GetConnectionString();
 
     public EmailOutboxDispatcher Dispatcher => Services.GetRequiredService<EmailOutboxDispatcher>();
@@ -64,6 +70,7 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         builder.UseSetting("WEB_URL", "http://localhost:5173");
         builder.UseSetting("AUTH_INTERNAL_TOKEN_FOR_NOTIF", NotifInternalToken);
         builder.UseSetting("JOB_INTERNAL_TOKEN_FOR_AUTH", OutboundJobToken);
+        builder.UseSetting(InternalServiceAuth.JobCallerTokenKey, JobCallerInternalToken);
         builder.UseSetting("APP_INTERNAL_TOKEN_FOR_AUTH", "test-app-internal-token-0123456789abcdef");
         builder.UseSetting("INTERNAL_SERVICE_TOKEN", LegacySharedToken);
         // Outside Development the host requires SMTP settings. They are placeholders: the recording sender below replaces the SMTP sender.
@@ -76,6 +83,7 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         builder.ConfigureTestServices(services =>
         {
             services.AddSingleton<IEmailSender>(Emails);
+            services.AddSingleton<ICompanyDirectoryClient>(CompanyDirectory);
             EmailOutboxWorkerRemoval.Remove(services);
         });
         if (RateLimitStore is not null)
@@ -103,6 +111,7 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
     public async Task ResetAsync()
     {
         Emails.Clear();
+        CompanyDirectory.Reset();
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AuthDbContext>();
         await db.Database.ExecuteSqlRawAsync("""

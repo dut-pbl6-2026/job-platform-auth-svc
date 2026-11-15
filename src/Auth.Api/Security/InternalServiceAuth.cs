@@ -15,6 +15,9 @@ public static class InternalServiceAuth
     /// <summary>Token notif-svc presents on <c>GET /api/internal/users/{id}/email</c>.</summary>
     public const string NotifCallerTokenKey = "AUTH_INTERNAL_TOKEN_FOR_NOTIF";
 
+    /// <summary>Token job-svc presents on <c>POST /api/internal/users/{id}/link-company</c> (AUTH-01-12, AUTH-01-14).</summary>
+    public const string JobCallerTokenKey = "AUTH_INTERNAL_TOKEN_FOR_JOB";
+
     private const string BearerPrefix = "Bearer ";
 
     /// <summary>

@@ -9,6 +9,10 @@ public enum EmailKind
     PasswordReset,
     DuplicateRegistrationNotice,
     UnknownAccountResetNotice,
+    /// <summary>Company sign-up verification link (AUTH-01-10, AUTH-01-11).</summary>
+    CompanySignUpVerification,
+    /// <summary>Fixed company sign-up notice, never with a link (AUTH-01-10, backlog A13).</summary>
+    CompanySignUpNotice,
 }
 
 /// <summary>

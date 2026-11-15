@@ -12,11 +12,13 @@ public class HttpInviteCodeClientTests
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<string> Paths { get; } = new();
+        public List<string> Bodies { get; } = new();
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Paths.Add(request.RequestUri!.AbsolutePath);
-            return Task.FromResult(respond(request));
+            Bodies.Add(request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct));
+            return respond(request);
         }
     }
 
@@ -33,7 +35,7 @@ public class HttpInviteCodeClientTests
     public async Task Check_200_ReturnsCompany_OnInternalPath()
     {
         var handler = new StubHandler(_ => Json(HttpStatusCode.OK, """{"companyId":"11111111-1111-1111-1111-111111111111","companyName":"Acme"}"""));
-        var result = await Client(handler).CheckAsync("ABCDEFGHJKLM");
+        var result = await Client(handler).CheckAsync("ABCDEFGHJKLM", "r@b.com");
 
         Assert.NotNull(result);
         Assert.Equal("Acme", result!.CompanyName);
@@ -41,31 +43,42 @@ public class HttpInviteCodeClientTests
     }
 
     [Fact]
+    public async Task Check_SendsTheBoundEmailWithTheCode()
+    {
+        var handler = new StubHandler(_ => Json(HttpStatusCode.OK, """{"companyId":"11111111-1111-1111-1111-111111111111","companyName":"Acme"}"""));
+        await Client(handler).CheckAsync("ABCDEFGHJKLM", "bound@acme.example");
+
+        var body = System.Text.Json.JsonDocument.Parse(handler.Bodies.Single()).RootElement;
+        Assert.Equal("ABCDEFGHJKLM", body.GetProperty("code").GetString());
+        Assert.Equal("bound@acme.example", body.GetProperty("email").GetString());
+    }
+
+    [Fact]
     public async Task Check_422_IsInvalidNotAnError()
     {
         var handler = new StubHandler(_ => Json(HttpStatusCode.UnprocessableEntity, """{"errorCode":"INVITE_CODE_INVALID"}"""));
-        Assert.Null(await Client(handler).CheckAsync("ABCDEFGHJKLM"));
+        Assert.Null(await Client(handler).CheckAsync("ABCDEFGHJKLM", "r@b.com"));
     }
 
     [Fact]
     public async Task Check_500_ThrowsUnavailable()
     {
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
-        await Assert.ThrowsAsync<InviteCodeServiceUnavailableException>(() => Client(handler).CheckAsync("ABCDEFGHJKLM"));
+        await Assert.ThrowsAsync<InviteCodeServiceUnavailableException>(() => Client(handler).CheckAsync("ABCDEFGHJKLM", "r@b.com"));
     }
 
     [Fact]
     public async Task Check_TransportFailure_ThrowsUnavailable()
     {
         var handler = new StubHandler(_ => throw new HttpRequestException("connection refused"));
-        await Assert.ThrowsAsync<InviteCodeServiceUnavailableException>(() => Client(handler).CheckAsync("ABCDEFGHJKLM"));
+        await Assert.ThrowsAsync<InviteCodeServiceUnavailableException>(() => Client(handler).CheckAsync("ABCDEFGHJKLM", "r@b.com"));
     }
 
     [Fact]
     public async Task Redeem_200_ReturnsIdAndCompany()
     {
         var handler = new StubHandler(_ => Json(HttpStatusCode.OK, """{"inviteCodeId":"22222222-2222-2222-2222-222222222222","companyId":"11111111-1111-1111-1111-111111111111"}"""));
-        var result = await Client(handler).RedeemAsync("ABCDEFGHJKLM");
+        var result = await Client(handler).RedeemAsync("ABCDEFGHJKLM", "r@b.com");
 
         Assert.Equal(Guid.Parse("22222222-2222-2222-2222-222222222222"), result!.InviteCodeId);
         Assert.Equal("/api/internal/invite-codes/redeem", handler.Paths.Single());
@@ -75,14 +88,14 @@ public class HttpInviteCodeClientTests
     public async Task Redeem_422_IsInvalid()
     {
         var handler = new StubHandler(_ => Json(HttpStatusCode.UnprocessableEntity, "{}"));
-        Assert.Null(await Client(handler).RedeemAsync("ABCDEFGHJKLM"));
+        Assert.Null(await Client(handler).RedeemAsync("ABCDEFGHJKLM", "r@b.com"));
     }
 
     [Fact]
     public async Task Redeem_UnreadableBody_ThrowsUnavailable()
     {
         var handler = new StubHandler(_ => Json(HttpStatusCode.OK, "not json"));
-        await Assert.ThrowsAsync<InviteCodeServiceUnavailableException>(() => Client(handler).RedeemAsync("ABCDEFGHJKLM"));
+        await Assert.ThrowsAsync<InviteCodeServiceUnavailableException>(() => Client(handler).RedeemAsync("ABCDEFGHJKLM", "r@b.com"));
     }
 
     [Fact]
