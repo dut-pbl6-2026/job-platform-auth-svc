@@ -105,7 +105,7 @@ public sealed class ResendVerificationEndpointTests : IClassFixture<RecordingAut
             await db.EmailVerificationTokens.Where(t => t.UserId == userId)
                 .ExecuteUpdateAsync(s => s.SetProperty(t => t.ExpiresAt, DateTime.UtcNow.AddMinutes(-1)));
         }
-        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/auth/verify-email", new VerifyEmailRequest(oldToken))).StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsJsonAsync("/api/auth/verify-email", new VerifyEmailRequest(oldToken))).StatusCode);
 
         Assert.Equal(HttpStatusCode.Accepted, (await ResendAsync(client, email)).StatusCode);
         await _factory.DeliverPendingEmailsAsync();

@@ -40,7 +40,7 @@ public class AuthService : IAuthService
             return Result.Failure(InviteCodeErrors.Unavailable);
         try
         {
-            if (await _inviteCodes.CheckAsync(code, ct) is not null)
+            if (await _inviteCodes.CheckAsync(code, email, ct) is not null)
                 return null;
         }
         catch (InviteCodeServiceUnavailableException ex)
@@ -121,7 +121,7 @@ public class AuthService : IAuthService
             {
                 redemption = _inviteCodes is null
                     ? null
-                    : await _inviteCodes.RedeemAsync(inviteCode!, ct);
+                    : await _inviteCodes.RedeemAsync(inviteCode!, email, ct);
             }
             catch (InviteCodeServiceUnavailableException ex)
             {
@@ -134,19 +134,28 @@ public class AuthService : IAuthService
 
         var companyId = redemption?.CompanyId;
         var user = new User(email, hash, request.FullName.Trim(), role, companyId);
-        var plainToken = _jwt.GenerateRefreshToken();
-        var tokenHash = _jwt.HashToken(plainToken);
         var now = DateTime.UtcNow;
-        var verificationExpiresAt = now.Add(EmailVerificationToken.Lifetime);
-        var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
         _db.Users.Add(user);
-        _db.EmailVerificationTokens.Add(new EmailVerificationToken(user.Id, tokenHash, verificationExpiresAt));
-        _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.EmailVerification, email, now, link, verificationExpiresAt));
+        if (role == "Recruiter")
+        {
+            // AUTH-01-15: the invite code is bound to this address and accepted with it, so the account is
+            // active at once and no verification mail is sent.
+            user.VerifyEmail();
+        }
+        else
+        {
+            var plainToken = _jwt.GenerateRefreshToken();
+            var tokenHash = _jwt.HashToken(plainToken);
+            var verificationExpiresAt = now.Add(EmailVerificationToken.Lifetime);
+            var link = $"{WebUrl()}/verify-email?token={Uri.EscapeDataString(plainToken)}";
+            _db.EmailVerificationTokens.Add(new EmailVerificationToken(user.Id, tokenHash, verificationExpiresAt));
+            _db.EmailOutboxMessages.Add(EmailOutboxMessage.Create(EmailKind.EmailVerification, email, now, link, verificationExpiresAt));
+        }
         try
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        catch (DbUpdateException ex) when (PersistenceErrors.IsUniqueViolation(ex))
         {
             // Lost a race with a concurrent registration for the same address: same response as the duplicate path.
             // The failed save rolled back the user, token and link row together, so none of them is written.
@@ -481,14 +490,4 @@ public class AuthService : IAuthService
     }
 
     private string WebUrl() => (_config["WEB_URL"] ?? _config["WebUrl"] ?? "http://localhost:5173").TrimEnd('/');
-
-    private static bool IsUniqueViolation(DbUpdateException ex)
-    {
-        if (ex.InnerException is Npgsql.PostgresException pgEx && pgEx.SqlState == "23505")
-            return true;
-
-        var message = ex.InnerException?.Message ?? ex.Message;
-        return message.Contains("unique", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("duplicate", StringComparison.OrdinalIgnoreCase);
-    }
 }

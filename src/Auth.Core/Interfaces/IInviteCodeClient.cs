@@ -6,13 +6,16 @@ namespace Auth.Core.Interfaces;
 /// </summary>
 public interface IInviteCodeClient
 {
-    /// <summary>Read-only check. Returns null when the code is invalid, expired or used.</summary>
+    /// <summary>
+    /// Read-only check against the address the code is bound to (AUTH-01-15). Returns null when the code is
+    /// invalid, expired, revoked, used, or presented with another address.
+    /// </summary>
     /// <exception cref="InviteCodeServiceUnavailableException">Transport failure or unexpected status.</exception>
-    Task<InviteCodeCheckResult?> CheckAsync(string code, CancellationToken ct = default);
+    Task<InviteCodeCheckResult?> CheckAsync(string code, string email, CancellationToken ct = default);
 
-    /// <summary>Atomic single-use redeem. Returns null when the code is invalid, expired or already used.</summary>
+    /// <summary>Atomic single-use redeem with the bound address. Returns null on the same conditions as <see cref="CheckAsync"/>.</summary>
     /// <exception cref="InviteCodeServiceUnavailableException">Transport failure or unexpected status.</exception>
-    Task<InviteCodeRedeemResult?> RedeemAsync(string code, CancellationToken ct = default);
+    Task<InviteCodeRedeemResult?> RedeemAsync(string code, string email, CancellationToken ct = default);
 
     /// <summary>
     /// Clears the used marker after a failed registration. Best effort: returns false (never throws)

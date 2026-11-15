@@ -16,18 +16,18 @@ public sealed class HttpInviteCodeClient(HttpClient http, ILogger<HttpInviteCode
     private const string CheckPath = "api/internal/invite-codes/check";
     private const string RedeemPath = "api/internal/invite-codes/redeem";
 
-    public async Task<InviteCodeCheckResult?> CheckAsync(string code, CancellationToken ct = default)
+    public async Task<InviteCodeCheckResult?> CheckAsync(string code, string email, CancellationToken ct = default)
     {
-        var response = await PostCodeAsync(CheckPath, code, ct);
+        var response = await PostCodeAsync(CheckPath, code, email, ct);
         if (response.StatusCode == HttpStatusCode.UnprocessableEntity)
             return null;
         var body = await ReadOrThrowAsync<CheckBody>(response, "check", ct);
         return new InviteCodeCheckResult(body.CompanyId, body.CompanyName);
     }
 
-    public async Task<InviteCodeRedeemResult?> RedeemAsync(string code, CancellationToken ct = default)
+    public async Task<InviteCodeRedeemResult?> RedeemAsync(string code, string email, CancellationToken ct = default)
     {
-        var response = await PostCodeAsync(RedeemPath, code, ct);
+        var response = await PostCodeAsync(RedeemPath, code, email, ct);
         if (response.StatusCode == HttpStatusCode.UnprocessableEntity)
             return null;
         var body = await ReadOrThrowAsync<RedeemBody>(response, "redeem", ct);
@@ -51,12 +51,12 @@ public sealed class HttpInviteCodeClient(HttpClient http, ILogger<HttpInviteCode
         }
     }
 
-    private async Task<HttpResponseMessage> PostCodeAsync(string path, string code, CancellationToken ct)
+    private async Task<HttpResponseMessage> PostCodeAsync(string path, string code, string email, CancellationToken ct)
     {
         try
         {
-            // No leading '/' per AGENTS.md outbound rules (RFC 3986 subpath).
-            return await http.PostAsJsonAsync(path, new { code }, ct);
+            // No leading '/' per AGENTS.md outbound rules (RFC 3986 subpath). The body carries the bound address (AUTH-01-15).
+            return await http.PostAsJsonAsync(path, new { code, email }, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

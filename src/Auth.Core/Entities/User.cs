@@ -30,4 +30,7 @@ public class User : Entity
     public void VerifyEmail() { EmailVerifiedAt ??= DateTime.UtcNow; Touch(); }
     public void Deactivate() { IsActive = false; Touch(); }
     public void Activate() { IsActive = true; Touch(); }
+
+    /// <summary>Makes the account a Recruiter of the Company (AUTH-01-06, AUTH-01-12). Callers check the rule first.</summary>
+    public void LinkCompany(Guid companyId) { Role = "Recruiter"; CompanyId = companyId; Touch(); }
 }

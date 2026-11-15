@@ -106,16 +106,16 @@ public sealed class RegistrationFlowTests : IClassFixture<RecordingAuthFactory>,
         var login = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest(email, Password));
 
         Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, reuse.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, reuse.StatusCode);
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
     }
 
     [Fact]
-    public async Task VerifyEmail_UnknownToken_Returns400()
+    public async Task VerifyEmail_UnknownToken_Returns422()
     {
         var res = await Client().PostAsJsonAsync("/api/auth/verify-email", new VerifyEmailRequest("not-a-real-token"));
 
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, res.StatusCode);
     }
 
     [Fact]

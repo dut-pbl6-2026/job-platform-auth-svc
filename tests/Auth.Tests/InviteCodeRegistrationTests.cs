@@ -58,7 +58,7 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
     public async Task Recruiter_ValidCode_CreatesUserInCodesCompanyAndRedeemsOnce()
     {
         var fake = new FakeInviteCodeClient();
-        var code = fake.Add("CODE-ONE", CompanyA);
+        var code = fake.Add("CODE-ONE", CompanyA, "r3@b.com");
         using var db = _fixture.CreateDbContext();
 
         // The client-sent companyId is ignored: the company comes from the code.
@@ -77,7 +77,7 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
     public async Task Recruiter_SecondUseOfSameCode_IsRejected()
     {
         var fake = new FakeInviteCodeClient();
-        var code = fake.Add("CODE-TWO", CompanyA);
+        var code = fake.Add("CODE-TWO", CompanyA, "first@b.com");
         using var db = _fixture.CreateDbContext();
         var svc = Service(db, fake);
 
@@ -93,7 +93,7 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
     public async Task Duplicate_WithValidCode_NoticeSucceedsAndCodeIsNotConsumed()
     {
         var fake = new FakeInviteCodeClient();
-        var code = fake.Add("CODE-THREE", CompanyA);
+        var code = fake.Add("CODE-THREE", CompanyA, "dup@b.com");
         using var db = _fixture.CreateDbContext();
         db.Users.Add(new User("dup@b.com", "hash", "Existing", "User", null));
         await db.SaveChangesAsync();
@@ -110,7 +110,7 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
     public async Task RaceOnEmail_AfterRedeem_ReleasesCodeAndReturnsDuplicatePath()
     {
         var fake = new FakeInviteCodeClient();
-        var code = fake.Add("CODE-FOUR", CompanyA);
+        var code = fake.Add("CODE-FOUR", CompanyA, "race@b.com");
         // Simulate a concurrent registration for the same email that commits right after the duplicate check.
         fake.OnRedeem = () =>
         {
@@ -152,6 +152,40 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
         Assert.Null((await db.Users.SingleAsync()).CompanyId);
     }
 
+    [Fact]
+    public async Task Recruiter_CodePresentedWithAnotherAddress_IsRejectedLikeAnyBadCode()
+    {
+        var fake = new FakeInviteCodeClient();
+        var code = fake.Add("CODE-BOUND", CompanyA, "bound@b.com");
+        using var db = _fixture.CreateDbContext();
+
+        var result = await Service(db, fake).RegisterAsync(Request("someone-else@b.com", "Recruiter", inviteCode: code));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(InviteCodeErrors.Invalid, result.Error);
+        Assert.Equal(new[] { "someone-else@b.com" }, fake.EmailsChecked);
+        Assert.Equal(0, fake.RedeemCalls);
+        Assert.Empty(await db.Users.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Recruiter_ValidCode_IsActiveAtOnce_AndGetsNoVerificationMail()
+    {
+        var fake = new FakeInviteCodeClient();
+        var code = fake.Add("CODE-ACTIVE", CompanyA, "active@b.com");
+        using var db = _fixture.CreateDbContext();
+
+        var result = await Service(db, fake).RegisterAsync(Request("active@b.com", "Recruiter", inviteCode: code));
+
+        Assert.True(result.IsSuccess);
+        var user = await db.Users.SingleAsync();
+        Assert.True(user.IsActive);
+        Assert.True(user.IsEmailVerified);
+        Assert.Empty(await db.EmailVerificationTokens.ToListAsync());
+        Assert.Empty(await db.EmailOutboxMessages.ToListAsync());
+        Assert.Equal(new[] { "active@b.com" }, fake.EmailsRedeemed);
+    }
+
     private static AuthService Service(AuthDbContext db, IInviteCodeClient client)
     {
         var jwt = new JwtTokenService(Options.Create(new JwtOptions
@@ -168,43 +202,45 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
     }
 
     private static RegisterRequest Request(string email, string role, string? inviteCode = null, Guid? companyId = null) =>
-        new(email, Password, "Test User", role, companyId, null, inviteCode);
+        new(email, Password, "Test User", role, companyId, inviteCode);
 
     private sealed class FakeInviteCodeClient : IInviteCodeClient
     {
-        private readonly Dictionary<string, (Guid CompanyId, Guid Id)> _codes = new();
+        private readonly Dictionary<string, (Guid CompanyId, Guid Id, string Email)> _codes = new();
         private readonly HashSet<string> _used = new();
 
         public int CheckCalls { get; private set; }
         public int RedeemCalls { get; private set; }
         public List<Guid> Released { get; } = new();
+        public List<string> EmailsChecked { get; } = new();
+        public List<string> EmailsRedeemed { get; } = new();
         public bool Unavailable { get; init; }
         public Action? OnRedeem { get; set; }
         public Guid LastRedeemedId { get; private set; }
 
-        /// <summary>Registers a code in the fake and returns it.</summary>
-        public string Add(string code, Guid companyId)
+        /// <summary>Registers a code bound to one address in the fake and returns it.</summary>
+        public string Add(string code, Guid companyId, string email)
         {
-            _codes[code] = (companyId, Guid.NewGuid());
+            _codes[code] = (companyId, Guid.NewGuid(), email);
             return code;
         }
 
-        public Task<InviteCodeCheckResult?> CheckAsync(string code, CancellationToken ct = default)
+        public Task<InviteCodeCheckResult?> CheckAsync(string code, string email, CancellationToken ct = default)
         {
             CheckCalls++;
+            EmailsChecked.Add(email);
             if (Unavailable)
                 throw new InviteCodeServiceUnavailableException("down");
-            return Task.FromResult(_codes.TryGetValue(code, out var v) && !_used.Contains(code)
-                ? new InviteCodeCheckResult(v.CompanyId, "Co")
-                : null);
+            return Task.FromResult(TryUsable(code, email, out var v) ? new InviteCodeCheckResult(v.CompanyId, "Co") : null);
         }
 
-        public Task<InviteCodeRedeemResult?> RedeemAsync(string code, CancellationToken ct = default)
+        public Task<InviteCodeRedeemResult?> RedeemAsync(string code, string email, CancellationToken ct = default)
         {
             RedeemCalls++;
+            EmailsRedeemed.Add(email);
             if (Unavailable)
                 throw new InviteCodeServiceUnavailableException("down");
-            if (!_codes.TryGetValue(code, out var v) || _used.Contains(code))
+            if (!TryUsable(code, email, out var v))
                 return Task.FromResult<InviteCodeRedeemResult?>(null);
             _used.Add(code);
             LastRedeemedId = v.Id;
@@ -216,6 +252,15 @@ public class InviteCodeRegistrationTests : IAsyncLifetime
         {
             Released.Add(inviteCodeId);
             return Task.FromResult(true);
+        }
+
+        /// <summary>A code works once, and only with the address it was issued to (AUTH-01-15).</summary>
+        private bool TryUsable(string code, string email, out (Guid CompanyId, Guid Id, string Email) value)
+        {
+            if (_codes.TryGetValue(code, out value) && !_used.Contains(code) && value.Email == email)
+                return true;
+            value = default;
+            return false;
         }
     }
 }
