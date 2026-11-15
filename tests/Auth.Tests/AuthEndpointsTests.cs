@@ -5,6 +5,7 @@ using Auth.Infrastructure.Data;
 using Auth.Tests.Fixtures;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
@@ -28,6 +29,12 @@ public sealed class CustomAuthFactory : WebApplicationFactory<Program>, IAsyncLi
         // Read lazily when the host is built (after InitializeAsync has started the container).
         builder.UseSetting("ConnectionStrings:AuthDb", ConnectionString);
         builder.UseSetting("WEB_URL", "http://localhost:5173");
+        // Placeholders that satisfy the outside-Development SMTP check. The recording sender replaces the SMTP sender.
+        builder.UseSetting("SMTP_HOST", "smtp.test.invalid");
+        builder.UseSetting("SMTP_USER", "test-user");
+        builder.UseSetting("SMTP_PASS", "test-pass");
+        builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
+        builder.ConfigureTestServices(services => services.AddSingleton<Auth.Core.Interfaces.IEmailSender>(new RecordingEmailSender()));
         builder.ConfigureServices(services =>
         {
             var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<AuthDbContext>));

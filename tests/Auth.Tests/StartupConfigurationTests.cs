@@ -39,6 +39,45 @@ public sealed class StartupConfigurationTests
         Assert.Contains("WEB_URL missing", ex.ToString());
     }
 
+    [Fact]
+    public void Startup_Fails_InProduction_WhenSmtpSettingsMissing()
+    {
+        using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
+        {
+            ["Jwt:Secret"] = ValidSecret,
+            ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
+            ["WEB_URL"] = "https://app.example.test",
+            ["REDIS_URL"] = "localhost:6379",
+            ["SMTP_HOST"] = "",
+            ["SMTP_USER"] = "",
+            ["SMTP_PASS"] = "",
+            ["SMTP_FROM"] = "",
+            ["EMAIL_SENDER"] = "",
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains("Auth email requires SMTP settings", ex.ToString());
+        Assert.Contains("SMTP_HOST", ex.ToString());
+    }
+
+    [Fact]
+    public void Startup_Fails_InDevelopment_WhenNoSmtpAndNoLogOptIn()
+    {
+        using var factory = new ConfigFactory("Development", new Dictionary<string, string?>
+        {
+            ["Jwt:Secret"] = ValidSecret,
+            ["ConnectionStrings:AuthDb"] = "Host=localhost;Database=unused",
+            ["DATABASE_URL_AUTH"] = "",
+            ["SMTP_HOST"] = "",
+            ["EMAIL_SENDER"] = "",
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+
+        Assert.Contains("EMAIL_SENDER=log", ex.ToString());
+    }
+
     private sealed class ConfigFactory(string environment, IDictionary<string, string?> settings) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)

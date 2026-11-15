@@ -126,17 +126,11 @@ builder.Services.AddSingleton<IPasswordHasher, PasswordHasherService>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<ITokenRevocationStore, TokenRevocationStore>();
 
-builder.Services.AddSingleton<IEmailSender>(sp =>
-{
-    var config = sp.GetRequiredService<IConfiguration>();
-    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-    var smtpHost = config["SMTP_HOST"] ?? config["EMAIL_SMTP_HOST"];
-
-    if (!string.IsNullOrWhiteSpace(smtpHost))
-        return new SmtpEmailSender(sp.GetRequiredService<ILogger<SmtpEmailSender>>(), config);
-
-    return new LoggerEmailSender(loggerFactory.CreateLogger<LoggerEmailSender>(), config);
-});
+// Resolved here, not inside the factory below, so a missing mail setting stops startup instead of the first email.
+var emailSenderKind = EmailSenderSelection.Resolve(builder.Environment.IsDevelopment(), builder.Configuration);
+builder.Services.AddSingleton<IEmailSender>(sp => emailSenderKind == EmailSenderKind.Smtp
+    ? new SmtpEmailSender(sp.GetRequiredService<ILogger<SmtpEmailSender>>(), sp.GetRequiredService<IConfiguration>())
+    : new LoggerEmailSender(sp.GetRequiredService<ILogger<LoggerEmailSender>>()));
 
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAdminService, AdminService>();
