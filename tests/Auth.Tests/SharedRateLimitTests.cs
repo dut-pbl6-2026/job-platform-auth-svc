@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Auth.Api.RateLimiting;
 using Auth.Core.Contracts;
 using Auth.Tests.Fixtures;
@@ -48,9 +49,10 @@ public sealed class SharedRateLimitTests : IAsyncLifetime
         var retryAfter = limited.Headers.RetryAfter!.Delta!.Value.TotalSeconds;
         Assert.InRange(retryAfter, 1, IpRateLimitPolicy.Login.Window.TotalSeconds);
 
-        var body = await limited.Content.ReadAsStringAsync();
-        Assert.Contains("Too many requests. Please try again later.", body);
-        Assert.DoesNotContain("nobody", body);
+        using var body = JsonDocument.Parse(await limited.Content.ReadAsStringAsync());
+        Assert.Equal(new[] { "status", "title", "detail" }, body.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.Equal(429, body.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal("Too many requests. Please try again later.", body.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]

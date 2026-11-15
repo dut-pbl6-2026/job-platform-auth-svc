@@ -50,22 +50,21 @@ builder.Services.AddOpenTelemetry()
 // Config
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
-// Access tokens last 15 minutes by default. Jwt:ExpiresMinutes (or Jwt__ExpiresMinutes) overrides it;
-// the SharedKernel class default of 60 is never used by this service.
+// Access tokens last 15 minutes unless Jwt:ExpiresMinutes (or Jwt__ExpiresMinutes) sets another value.
+// The SharedKernel class default of 60 is never used by this service.
 const int DefaultAccessTokenMinutes = 15;
-if (builder.Configuration["Jwt:ExpiresMinutes"] is null)
-    jwt.ExpiresMinutes = DefaultAccessTokenMinutes;
+builder.Services.Configure<JwtOptions>(o =>
+{
+    if (builder.Configuration["Jwt:ExpiresMinutes"] is null)
+        o.ExpiresMinutes = DefaultAccessTokenMinutes;
+});
 if (jwt.ExpiresMinutes <= 0)
     throw new InvalidOperationException("Jwt:ExpiresMinutes must be a positive number of minutes");
 if (builder.Environment.IsDevelopment() && string.IsNullOrEmpty(jwt.Secret))
     jwt.Secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     throw new InvalidOperationException("Jwt:Secret must be at least 32 characters (set Jwt__Secret outside Development)");
-builder.Services.PostConfigure<JwtOptions>(o =>
-{
-    o.Secret = jwt.Secret;
-    o.ExpiresMinutes = jwt.ExpiresMinutes;
-});
+builder.Services.PostConfigure<JwtOptions>(o => o.Secret = jwt.Secret);
 
 if (string.IsNullOrWhiteSpace(conn))
     throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings__AuthDb");
@@ -124,7 +123,8 @@ if (!string.IsNullOrWhiteSpace(redisUrl))
 
     builder.Services.AddStackExchangeRedisCache(o => o.ConfigurationOptions = redisOptions);
 
-    // Rate-limit counters share this Redis, so the limit holds across replicas. Connected on first use.
+    // Rate-limit counters share this Redis, so the limit holds across replicas. The middleware is built
+    // with the pipeline, so this connection is opened at startup.
     builder.Services.AddSingleton<IRateLimitCounterStore>(_ =>
         new RedisRateLimitCounterStore(ConnectionMultiplexer.Connect(redisOptions)));
 }
