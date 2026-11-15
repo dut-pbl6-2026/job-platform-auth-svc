@@ -117,5 +117,6 @@ docker run -p 5001:5001 --env-file .env auth
 
 - `GET /health` — static liveness (`{"status":"ok","service":"auth"}`).
 - `GET /health/ready` — readiness: Postgres (`AuthDbContext`) and Redis (only when `REDIS_URL` is set); `503` when a dependency is down.
+- Rate limits (per IP, fixed window) and access-token revocation share the Redis at `REDIS_URL`. Production refuses to start without it. Access tokens last `Jwt:ExpiresMinutes` (default 15).
 - Logging: Serilog, compact JSON on console outside Development. Every request gets an `X-Correlation-Id` (taken from the request if safe, generated otherwise, echoed in the response and attached to all log lines). Authorization headers/tokens are never logged.
 - SonarCloud (optional): CI runs `dotnet-sonarscanner` only when the `SONAR_TOKEN` secret is available (skipped on fork PRs). Optional repo variables `SONAR_ORGANIZATION` (default `dut-pbl6-2026`) and `SONAR_PROJECT_KEY` (default `dut-pbl6-2026_job-platform-auth-svc`).

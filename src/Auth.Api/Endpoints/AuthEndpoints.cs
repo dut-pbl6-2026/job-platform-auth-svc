@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Auth.Api.Filters;
 using Auth.Core.Contracts;
+using Auth.Api.RateLimiting;
 using Auth.Core.Interfaces;
 using Microsoft.AspNetCore.Http.HttpResults;
 
@@ -44,7 +45,7 @@ public static class AuthEndpoints
         .WithName("Register")
         .WithSummary("Register new user; the account stays pending until the emailed link is verified")
         .AddEndpointFilter<ValidationFilter<RegisterRequest>>()
-        .RequireRateLimiting("register")
+        .WithMetadata(IpRateLimitPolicy.Register)
         .Produces<RegisterResponse>(202)
         .ProducesValidationProblem();
 
@@ -62,7 +63,7 @@ public static class AuthEndpoints
         .WithName("VerifyEmail")
         .WithSummary("Activate a pending account with the emailed one-time link token (24h)")
         .AddEndpointFilter<ValidationFilter<VerifyEmailRequest>>()
-        .RequireRateLimiting("verify")
+        .WithMetadata(IpRateLimitPolicy.Verify)
         .Produces(200)
         .ProducesProblem(400)
         .ProducesValidationProblem();
@@ -87,7 +88,7 @@ public static class AuthEndpoints
         .WithName("Login")
         .WithSummary("Login and issue JWT")
         .AddEndpointFilter<ValidationFilter<LoginRequest>>()
-        .RequireRateLimiting("login")
+        .WithMetadata(IpRateLimitPolicy.Login)
         .Produces<AuthResponse>(200)
         .Produces(401)
         .ProducesProblem(403);
@@ -114,7 +115,7 @@ public static class AuthEndpoints
         .WithName("Refresh")
         .WithSummary("Rotate refresh token (family-scoped reuse detection)")
         .AddEndpointFilter<ValidationFilter<RefreshRequest>>()
-        .RequireRateLimiting("refresh")
+        .WithMetadata(IpRateLimitPolicy.Refresh)
         .Produces<AuthResponse>(200)
         .Produces(401);
 
@@ -175,7 +176,7 @@ public static class AuthEndpoints
         .WithName("ForgotPassword")
         .WithSummary("Request password reset (anti-enumeration, 15m TTL, 5/IP/h)")
         .AddEndpointFilter<ValidationFilter<ForgotPasswordRequest>>()
-        .RequireRateLimiting("forgot")
+        .WithMetadata(IpRateLimitPolicy.Forgot)
         .Produces(200)
         .ProducesValidationProblem();
 
@@ -199,7 +200,7 @@ public static class AuthEndpoints
         .WithName("ResetPassword")
         .WithSummary("Reset password (single-use 15m, revokes all refresh tokens)")
         .AddEndpointFilter<ValidationFilter<ResetPasswordRequest>>()
-        .RequireRateLimiting("reset")
+        .WithMetadata(IpRateLimitPolicy.Reset)
         .Produces(200)
         .Produces(401)
         .ProducesValidationProblem();
