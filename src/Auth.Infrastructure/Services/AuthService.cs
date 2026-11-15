@@ -1,6 +1,7 @@
 using Auth.Core.Contracts;
 using Auth.Core.Entities;
 using Auth.Core.Interfaces;
+using Auth.Core.Security;
 using Auth.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -47,8 +48,8 @@ public class AuthService : IAuthService
         if (!allowedRoles.Contains(role))
             return Result.Failure("Invalid role");
 
-        if (!IsPasswordStrong(request.Password))
-            return Result.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
+        if (!PasswordPolicy.IsStrong(request.Password))
+            return Result.Failure("Password must be " + PasswordPolicy.Description);
 
         // SRS AUTH-01-06: Recruiter requires companyId (FK → Company)
         if (role == "Recruiter" && !request.CompanyId.HasValue)
@@ -268,8 +269,8 @@ public class AuthService : IAuthService
 
     public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken ct = default)
     {
-        if (!IsPasswordStrong(request.NewPassword))
-            return Result.Failure("Password must be at least 8 characters with 1 uppercase and 1 digit");
+        if (!PasswordPolicy.IsStrong(request.NewPassword))
+            return Result.Failure("Password must be " + PasswordPolicy.Description);
 
         var hash = _jwt.HashToken(request.Token);
         var stored = await _db.PasswordResetTokens.FirstOrDefaultAsync(x => x.TokenHash == hash, ct);
@@ -296,14 +297,6 @@ public class AuthService : IAuthService
     }
 
     private string WebUrl() => (_config["WEB_URL"] ?? _config["WebUrl"] ?? "http://localhost:5173").TrimEnd('/');
-
-    private static bool IsPasswordStrong(string pwd)
-    {
-        if (pwd.Length < 8) return false;
-        if (!pwd.Any(char.IsUpper)) return false;
-        if (!pwd.Any(char.IsDigit)) return false;
-        return true;
-    }
 
     private static bool IsUniqueViolation(DbUpdateException ex)
     {

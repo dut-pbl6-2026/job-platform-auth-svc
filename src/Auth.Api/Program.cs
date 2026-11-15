@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
 using System.Net.Http.Headers;
+using Auth.Api.Bootstrap;
 using Auth.Api.Endpoints;
 using Auth.Api.Observability;
 using Auth.Core.Interfaces;
@@ -23,6 +24,16 @@ using StackExchange.Redis;
 using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// EF — Npgsql connection string comes from configuration only (no committed fallback).
+// Development: set DATABASE_URL_AUTH (see README). Other environments: set it as well.
+var conn = builder.Configuration.GetConnectionString("AuthDb")
+           ?? builder.Configuration["DATABASE_URL_AUTH"];
+
+// One-time admin bootstrap: `bootstrap-admin` runs the command and exits without starting the HTTP host.
+if (AdminBootstrapCommand.IsInvoked(args))
+    return await AdminBootstrapCommand.RunAsync(args, conn, Environment.GetEnvironmentVariable, Console.Out, Console.Error);
+
 builder.AddObservability();
 
 // Monitoring: expose OpenTelemetry metrics on /metrics (Prometheus scrape target).
@@ -44,11 +55,6 @@ if (builder.Environment.IsDevelopment() && string.IsNullOrEmpty(jwt.Secret))
 if (string.IsNullOrEmpty(jwt.Secret) || jwt.Secret.Length < 32)
     throw new InvalidOperationException("Jwt:Secret must be at least 32 characters (set Jwt__Secret outside Development)");
 builder.Services.PostConfigure<JwtOptions>(o => o.Secret = jwt.Secret);
-
-// EF — Npgsql connection string comes from configuration only (no committed fallback).
-// Development: set DATABASE_URL_AUTH (see README). Other environments: set it as well.
-var conn = builder.Configuration.GetConnectionString("AuthDb")
-           ?? builder.Configuration["DATABASE_URL_AUTH"];
 
 if (string.IsNullOrWhiteSpace(conn))
     throw new InvalidOperationException("AuthDb connection string missing — set DATABASE_URL_AUTH or ConnectionStrings__AuthDb");
@@ -372,6 +378,7 @@ app.MapAdminEndpoints();
 app.MapInternalUserEndpoints();
 
 app.Run();
+return 0;
 
 static void AddIpFixedWindowPolicy(RateLimiterOptions options, string name, int permitLimit, TimeSpan window) =>
     options.AddPolicy(name, httpContext => RateLimitPartition.GetFixedWindowLimiter(

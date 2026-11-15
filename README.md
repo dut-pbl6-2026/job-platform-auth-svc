@@ -72,6 +72,26 @@ No connection string or secret is committed. Required environment variables:
 - `WEB_URL`: web app origin for verification and reset links. Startup fails outside Development when missing.
 - `INTERNAL_SERVICE_TOKEN`: bearer token for `/api/internal/*` (not routed by the gateway). Unset means the endpoints return 401.
 
+## Admin bootstrap (one-time)
+
+The first Admin account is created by a one-time command, not by a manual DB insert. Public registration can never create an Admin.
+
+```bash
+# Local: export the two variables, then run the command (migrations run first, no HTTP server starts)
+export ADMIN_BOOTSTRAP_EMAIL=admin@example.com
+export ADMIN_BOOTSTRAP_PASSWORD='ChangeMe-Admin1'
+dotnet run --project src/Auth.Api -- bootstrap-admin
+
+# Docker: -e NAME without a value copies the variable from the host shell, so the secret stays off the command line
+docker run --rm --env-file .env -e ADMIN_BOOTSTRAP_EMAIL -e ADMIN_BOOTSTRAP_PASSWORD auth bootstrap-admin
+```
+
+- `ADMIN_BOOTSTRAP_EMAIL` and `ADMIN_BOOTSTRAP_PASSWORD` are read from environment variables only. The password must meet the normal password policy (8+ characters, 1 uppercase, 1 digit).
+- The created account has the `Admin` role and is already email-verified.
+- The command is idempotent. If an account with that email exists, it is left unchanged (role, password and verification are not touched) and the command exits `0`.
+- Exit codes: `0` success or already exists, `1` missing or invalid input or database failure, `2` unexpected extra arguments. The password is never printed.
+- Run it once per environment, after the first deploy. Re-running is safe but has no effect.
+
 ## Docker
 
 ```bash

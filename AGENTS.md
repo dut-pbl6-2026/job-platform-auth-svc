@@ -65,6 +65,13 @@ Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReferenc
 - `dotnet build --warnaserror` + `dotnet format --verify-no-changes` (mise `build/test/format`), `EF` alignment `EF10.0.4` + `Npgsql10.0.3` (MSB3277), coverage `>70%` `MAINT-02`.
 - Never commit `.env` (`.gitignore`), `mise run sync-env` single source `../job-platform-infra/envs/.env.dev.example` (`DATABASE_URL_AUTH`, `JWT_SECRET`).
 
+## Admin bootstrap (one-time)
+
+- First Admin is created by `bootstrap-admin` (same binary, no HTTP host): `docker run --rm --env-file .env -e ADMIN_BOOTSTRAP_EMAIL -e ADMIN_BOOTSTRAP_PASSWORD auth bootstrap-admin`, or `dotnet run --project src/Auth.Api -- bootstrap-admin` locally.
+- Env only: `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD` (policy: 8+, 1 upper, 1 digit). Missing or weak input exits `1`. Never log the password.
+- Idempotent: an existing account with that email is untouched (exit `0`). New account: role `Admin`, email verified, migrations run first.
+- One-time per environment. Implementation: `src/Auth.Api/Bootstrap/AdminBootstrapCommand.cs`; password policy in `src/Auth.Core/Security/PasswordPolicy.cs`.
+
 ## Workflow
 
 ```bash
