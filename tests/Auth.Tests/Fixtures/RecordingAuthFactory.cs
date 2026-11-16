@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using Auth.Api.Networking;
 using Auth.Api.Security;
 using Auth.Core.Entities;
 using Auth.Core.Interfaces;
@@ -43,7 +44,10 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
     /// </summary>
     public IRateLimitCounterStore? RateLimitStore { get; init; }
 
-    /// <summary>Value for ForwardedHeaders:KnownNetworks. Null leaves it unset (non-Production).</summary>
+    /// <summary>Value for TRUSTED_PROXIES. Null leaves it unset, so the connection IP is used.</summary>
+    public string? TrustedProxies { get; init; }
+
+    /// <summary>Legacy value for ForwardedHeaders:KnownNetworks. Null leaves it unset (non-Production).</summary>
     public string? ForwardedKnownNetworks { get; init; }
 
     /// <summary>
@@ -78,6 +82,8 @@ public sealed class RecordingAuthFactory : WebApplicationFactory<Program>, IAsyn
         builder.UseSetting("SMTP_USER", "test-user");
         builder.UseSetting("SMTP_PASS", "test-pass");
         builder.UseSetting("SMTP_FROM", "no-reply@test.invalid");
+        if (TrustedProxies is not null)
+            builder.UseSetting(ForwardedProxyTrust.TrustedProxiesKey, TrustedProxies);
         if (ForwardedKnownNetworks is not null)
             builder.UseSetting("ForwardedHeaders:KnownNetworks", ForwardedKnownNetworks);
         builder.ConfigureTestServices(services =>

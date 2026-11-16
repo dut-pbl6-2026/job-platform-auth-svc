@@ -12,34 +12,48 @@ namespace Auth.Api.Networking;
 /// </summary>
 public static class ForwardedProxyTrust
 {
+    /// <summary>
+    /// Comma-separated proxy addresses/CIDRs trusted to append X-Forwarded-For. Primary setting; the
+    /// older ForwardedHeaders:KnownNetworks key is still read as a fallback.
+    /// </summary>
+    public const string TrustedProxiesKey = "TRUSTED_PROXIES";
     public const string KnownNetworksKey = "ForwardedHeaders:KnownNetworks";
 
     /// <summary>
     /// Reads the configured proxy networks. Accepts a comma-separated value
-    /// (ForwardedHeaders__KnownNetworks=10.0.0.0/8,192.168.1.5) or indexed entries
-    /// (ForwardedHeaders__KnownNetworks__0=...). Returns an empty list when unset (non-Production only).
+    /// (TRUSTED_PROXIES=10.0.0.0/8,192.168.1.5) or indexed entries (TRUSTED_PROXIES__0=...), and falls
+    /// back to ForwardedHeaders:KnownNetworks. Returns an empty list when unset (non-Production only).
     /// </summary>
     public static IReadOnlyList<IPNetwork> ReadNetworks(IConfiguration configuration, bool isProduction)
     {
-        var entries = new List<string>();
-        var raw = configuration[KnownNetworksKey];
-        if (!string.IsNullOrWhiteSpace(raw))
-            entries.AddRange(raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-        entries.AddRange(configuration.GetSection(KnownNetworksKey).GetChildren()
-            .Select(c => c.Value)
-            .Where(v => !string.IsNullOrWhiteSpace(v))
-            .Select(v => v!.Trim()));
+        var entries = Collect(configuration, TrustedProxiesKey);
+        if (entries.Count == 0)
+            entries = Collect(configuration, KnownNetworksKey);
 
         if (entries.Count == 0)
         {
             if (isProduction)
                 throw new InvalidOperationException(
-                    "ForwardedHeaders:KnownNetworks must list the gateway's network in Production " +
-                    "(set ForwardedHeaders__KnownNetworks). Without it every client shares the gateway's rate-limit bucket.");
+                    "TRUSTED_PROXIES (or ForwardedHeaders:KnownNetworks) must list the gateway's network in " +
+                    "Production (set TRUSTED_PROXIES to the compose network, e.g. 172.21.0.0/16). " +
+                    "Without it every client shares the gateway's rate-limit bucket.");
             return [];
         }
 
         return Parse(entries);
+    }
+
+    private static List<string> Collect(IConfiguration configuration, string key)
+    {
+        var entries = new List<string>();
+        var raw = configuration[key];
+        if (!string.IsNullOrWhiteSpace(raw))
+            entries.AddRange(raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        entries.AddRange(configuration.GetSection(key).GetChildren()
+            .Select(c => c.Value)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v!.Trim()));
+        return entries;
     }
 
     /// <summary>Parses CIDR ranges or single addresses. Rejects invalid entries and catch-all ranges.</summary>

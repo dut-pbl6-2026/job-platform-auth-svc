@@ -86,7 +86,7 @@ if (string.IsNullOrWhiteSpace(webUrl) && !builder.Environment.IsDevelopment())
 
 // ForwardedHeaders: trusted only from configured proxies. With none configured the
 // middleware is not registered, because an empty KnownProxies list trusts every peer.
-// Resolved eagerly: Production fails startup when ForwardedHeaders:KnownNetworks is empty or catch-all.
+// Resolved eagerly: Production fails startup when TRUSTED_PROXIES is empty or catch-all.
 var forwardedProxyNetworks = ForwardedProxyTrust.ReadNetworks(builder.Configuration, builder.Environment.IsProduction());
 if (forwardedProxyNetworks.Count > 0)
 {
@@ -97,6 +97,8 @@ if (forwardedProxyNetworks.Count > 0)
         ForwardedProxyTrust.Apply(o, forwardedProxyNetworks);
     });
 }
+// Rate-limit buckets use the same trusted-proxy list; with none configured the connection IP is used.
+builder.Services.AddSingleton(new ClientIpResolver(forwardedProxyNetworks));
 
 // CORS
 var corsOriginsRaw = builder.Configuration["CORS_ORIGINS"]
@@ -344,10 +346,12 @@ if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
     app.UseSwaggerUI();
 }
 
+// Rate limiting runs before forwarded headers so the resolver sees the real peer; it reads
+// X-Forwarded-For itself and trusts it only from a configured proxy.
+app.UseMiddleware<IpRateLimitMiddleware>();
 if (forwardedProxyNetworks.Count > 0)
     app.UseForwardedHeaders();
 app.UseCors("Default");
-app.UseMiddleware<IpRateLimitMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();

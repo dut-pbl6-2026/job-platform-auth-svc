@@ -46,6 +46,29 @@ public class ForwardedProxyTrustTests
         Assert.Equal(2, networks.Count);
     }
 
+    [Fact]
+    public void TrustedProxiesSetting_IsThePrimarySource()
+    {
+        var networks = ForwardedProxyTrust.ReadNetworks(
+            Config((ForwardedProxyTrust.TrustedProxiesKey, "172.21.0.0/16")), isProduction: true);
+
+        Assert.Single(networks);
+        Assert.True(networks[0].Contains(IPAddress.Parse("172.21.0.17")));
+    }
+
+    [Fact]
+    public void TrustedProxiesSetting_WinsOverLegacyKnownNetworks()
+    {
+        var networks = ForwardedProxyTrust.ReadNetworks(
+            Config(
+                (ForwardedProxyTrust.TrustedProxiesKey, "172.21.0.0/16"),
+                (ForwardedProxyTrust.KnownNetworksKey, "10.0.0.0/8")),
+            isProduction: true);
+
+        Assert.Single(networks);
+        Assert.True(networks[0].Contains(IPAddress.Parse("172.21.0.17")));
+    }
+
     [Theory]
     [InlineData("0.0.0.0/0")]
     [InlineData("::/0")]
