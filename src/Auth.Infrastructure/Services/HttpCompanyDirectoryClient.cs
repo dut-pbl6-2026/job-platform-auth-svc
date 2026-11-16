@@ -37,6 +37,10 @@ public sealed class HttpCompanyDirectoryClient(HttpClient http, ILogger<HttpComp
         if (response.StatusCode == HttpStatusCode.Conflict)
             throw new CompanyAlreadyExistsException();
         var body = await ReadAsync<CreatedCompanyBody>(response, "create-company", ct);
+        // A 2xx with no usable id means the two sides disagree on the field name (or the body shape
+        // changed). Fail the verification as unavailable instead of linking the founder to Guid.Empty.
+        if (body.CompanyId == Guid.Empty)
+            throw new CompanyDirectoryUnavailableException("job-svc company create-company returned no companyId");
         return body.CompanyId;
     }
 
