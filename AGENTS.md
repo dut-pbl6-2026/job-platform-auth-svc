@@ -29,17 +29,20 @@ tests/Auth.Tests        → xunit
 AuthService.sln         → mise run build/test
 ```
 
-Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReference JobPlatform.SharedKernel 0.3.1` via the GitHub Packages feed in `nuget.config`, never `ProjectReference` per `master-plan.md:132`). `MAINT-01` clean arch, `Result<T>` for domain failures not exceptions.
+Dependency: `Api → Infrastructure → Core → SharedKernel` (`PackageReference JobPlatform.SharedKernel 0.4.0` via the GitHub Packages feed in `nuget.config`, never `ProjectReference` per `master-plan.md:132`). `MAINT-01` clean arch, `Result<T>` for domain failures not exceptions.
 
 ## SRS mapping (AUTH-01)
 
 - `POST /api/auth/register` `202 Accepted` `{message}` for new and existing emails alike (no enumeration): new email → pending account + one-time 24h verification link (`POST /api/auth/verify-email`); existing email → notice to owner, no change. Login refuses unverified accounts with the same `401` as bad credentials. Pwd `8+1upper+1num`, `POST /api/auth/login` `200 {accessToken,refreshToken,user}` `401/403`, `POST /api/auth/refresh` 7/30d SHA256 rotation reuse→revoke family, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password` 15min TTL 5/IP/h anti-enumeration, `POST /api/auth/resend-verification` `202 {message}` same body for unknown, verified and unverified emails; unverified gets a new 24h link through the outbox, `POST /api/auth/reset-password` revokes all tokens, `GET/POST /api/companies` linking `companyId` FK tax_code verified.
+- `POST /api/auth/register-company` `202 Accepted` with one fixed `{message}` for every outcome (new sign-up, existing email, taken name/tax code, domain match): work email required (`422 WORK_EMAIL_REQUIRED`, free-provider list plus `FREE_EMAIL_DOMAINS`), `POST /api/internal/companies/availability` and `/domain-match` lookups on every request with the values in the body, `503` and nothing stored when a lookup fails, 5/IP/h. `POST /api/auth/verify-email` completes a personal or company sign-up; bad/expired/used token returns `422 VERIFICATION_TOKEN_INVALID`; verification creates the Company + admin Recruiter or a join request.
+- Recruiter invite codes are bound to one email: job-svc `check`/`redeem` take `{code, email}`; a code presented with another address is `422 INVITE_CODE_INVALID`. Join requests are job-svc routes (`GET /api/companies/me/join-request`, `POST .../escalate`, admin list/approve/reject); the waiting period is `COMPANY_JOIN_REQUEST_TTL_DAYS` (default 7).
 - Gateway `GW-01` validates JWT then forwards `X-User-Id/Role`.
 - `GET /api/internal/users/{id}/email` (service-to-service, `AUTH_INTERNAL_TOKEN_FOR_NOTIF` bearer (notif-svc only), fail-closed 401, 404 unknown id). Not routed through the gateway.
+- `POST /api/internal/users/{id}/link-company` (job-svc only, `AUTH_INTERNAL_TOKEN_FOR_JOB`, fail-closed 401): sets the user's `CompanyId` and role `Recruiter`; idempotent for the same Company, `409 ACCOUNT_ALREADY_HAS_COMPANY` for a different one. Not routed through the gateway.
 
 ## JWT (RS256, JWKS)
 
-`SharedKernel JwtOptions`: `SectionName=Jwt`, `Issuer=Audience=job-platform`, `ExpiresMinutes=15` (`Jwt__ExpiresMinutes`). Its `Secret` property is no longer read (owner follow-up: remove it in a SharedKernel release).
+`SharedKernel JwtOptions`: `SectionName=Jwt`, `Issuer=Audience=job-platform`, `ExpiresMinutes=15` (`Jwt__ExpiresMinutes`). SharedKernel 0.4.0 removed `Secret`; no service holds a signing secret.
 - Signing key: `Jwt__SigningKeyPem` (base64 of PKCS#8 RSA private PEM, 2048+ bits), required in every environment, no default. `Jwt__PreviousPublicKeys__N` lists public keys still published during rotation. Implementation: `src/Auth.Infrastructure/Services/JwtSigningKeys.cs`.
 - `kid` = RFC 7638 thumbprint. `JwtTokenService.cs` signs `RsaSha256`, claims `sub`=`NameIdentifier`+`Email`+`Role`+`Jti`, expires `AddMinutes(Jwt:ExpiresMinutes)`, `RandomNumberGenerator 64B Base64` for refresh, `SHA256 Hex Lower` for `TokenHash` (128 char).
 - Publishes `GET /.well-known/openid-configuration` and `GET /.well-known/jwks.json` (public members only). Not routed by the gateway.
@@ -100,4 +103,4 @@ mise run ef-check
 mise run run  # http://localhost:5001/health → {"status":"ok"}
 ```
 
-`feature/* → main` (PR template: Changes/How to verify/Checklist `mise run pack-shared` if `SharedKernel` bumped).
+`feature/* → main` (PR template: Changes/How to verify/Checklist bump the `JobPlatform.SharedKernel` `PackageReference` if the shared release changed).

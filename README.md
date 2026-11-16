@@ -5,10 +5,10 @@ Auth service for **Vietnam Job Platform** (`pbl6`) — `dut-pbl6-2026`. `registe
 ## Overview
 
 - `src/Auth.Api` — Web API `JWT Bearer` `Swagger` `health`
-- `src/Auth.Core` — `User` `RefreshToken`
+- `src/Auth.Core` — `User` `RefreshToken` `PasswordResetToken` `EmailVerificationToken` `PendingCompanySignup` `EmailOutboxMessage` `AuditLog`
 - `src/Auth.Infrastructure` — `AuthDbContext` `Npgsql` `Migrations` `JwtTokenService` `BCrypt 12`
 - `tests` — `xunit` `PasswordHasher`
-- GitHub Packages feed (`nuget.config`) — `JobPlatform.SharedKernel 0.3.1`; restore needs `GITHUB_TOKEN` with `read:packages`
+- GitHub Packages feed (`nuget.config`) — `JobPlatform.SharedKernel 0.4.0`; restore needs `GITHUB_TOKEN` with `read:packages`
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ mise run format    # dotnet format --verify-no-changes
 mise run ef-check
 ```
 
-Update SharedKernel: `mise run pack-shared`.
+Update SharedKernel: bump the `PackageReference` to the version released from `job-platform-shared` (GitHub Packages).
 
 ## Run
 
@@ -55,13 +55,21 @@ Update SharedKernel: `mise run pack-shared`.
 mise run run              # dotnet run --project src/Auth.Api
 curl http://localhost:5001/health   # {"status":"ok"}
 curl -i -X POST http://localhost:5001/api/auth/register -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123","fullName":"Hoai"}' # 202 {"message":"Check your email to verify your account."}
-curl -X POST http://localhost:5001/api/auth/verify-email -H 'Content-Type: application/json' -d '{"token":"<token from the emailed link>"}' # 200 (link valid 24h, single use)
+curl -X POST http://localhost:5001/api/auth/verify-email -H 'Content-Type: application/json' -d '{"token":"<token from the emailed link>"}' # 200 (link valid 24h, single use); bad/expired/used token: 422 VERIFICATION_TOKEN_INVALID
 curl -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"email":"a@b.com","password":"SecureP@ss123"}' # 200 {accessToken,refreshToken,user} (401 until verified)
 ```
 
 `UseExceptionHandler` + `ILogger`. The host does not migrate on startup: run `migrate` as a separate step first (see below).
 
 Registration never reveals whether an email is taken: both cases return `202`. A new address gets a pending account and a verification link; an existing address gets a notice mail to its owner.
+
+## Company self-serve sign-up (AUTH-01-10 to AUTH-01-15)
+
+`POST /api/auth/register-company` (anonymous) takes `{ companyName, taxCode?, email, password, fullName }` and always returns the same `202 { message }`, whatever the outcome (new sign-up, existing email, taken name or tax code, or a domain that already belongs to a verified Company). The email domain must be a work address: free providers are rejected with `422 WORK_EMAIL_REQUIRED` before any lookup. Both job-svc lookups (`POST /api/internal/companies/availability` and `POST /api/internal/companies/domain-match`, values in the body) run on every request; if either fails the response is `503` and nothing is stored.
+
+The emailed link is valid for 24 h and single use. `POST /api/auth/verify-email` completes either a personal registration or a company sign-up; a bad, expired or already-used token returns `422 VERIFICATION_TOKEN_INVALID`. Verification creates the Company and its first admin (a verified Recruiter), or a join request when the domain already belongs to a verified Company. Rate limit: 5 company sign-ups per IP per hour; every request counts.
+
+Invite codes join an existing Company and are bound to one email address. auth-svc calls job-svc `/api/internal/invite-codes/check` and `/redeem` with `{ code, email }`; a code presented with another address is rejected exactly like an unknown or expired code (`422 INVITE_CODE_INVALID`). Join requests live in job-svc: `GET /api/companies/me/join-request`, `POST /api/companies/me/join-request/escalate`, and the admin endpoints `GET /api/companies/{id}/join-requests`, `POST .../{requestId}/approve|reject`. The waiting period is `COMPANY_JOIN_REQUEST_TTL_DAYS` (job-svc, default 7 days).
 
 ## Configuration
 
@@ -73,8 +81,10 @@ No connection string or secret is committed. Required environment variables:
 - `Jwt__PreviousPublicKeys__0..n` (optional): base64 of SPKI PEM public keys still published in the JWKS during a key rotation.
 - Validators read the public keys from `GET /.well-known/jwks.json` (discovery at `/.well-known/openid-configuration`). auth-svc is not routed by the gateway for these paths.
 - `WEB_URL`: web app origin for verification and reset links. Startup fails outside Development when missing.
-- `AUTH_INTERNAL_TOKEN_FOR_NOTIF`: bearer token notif-svc presents on `/api/internal/*` (not routed by the gateway). Unset means the endpoint returns 401; required outside Development.
+- `AUTH_INTERNAL_TOKEN_FOR_NOTIF`: bearer token notif-svc presents on `GET /api/internal/users/{id}/email` (not routed by the gateway). Unset means the endpoint returns 401; required outside Development.
+- `AUTH_INTERNAL_TOKEN_FOR_JOB`: bearer token job-svc presents on `POST /api/internal/users/{id}/link-company` when an admin or support approves a join request. Fail-closed 401 when unset; the prod compose file requires it.
 - `JOB_INTERNAL_TOKEN_FOR_AUTH` / `APP_INTERNAL_TOKEN_FOR_AUTH`: tokens auth-svc presents to job-svc and app-svc `/api/internal/stats`. Required outside Development.
+- `FREE_EMAIL_DOMAINS` (optional): comma-separated domains added to the built-in free-provider list that company sign-up rejects. It can only add domains, never remove one.
 - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`: outgoing mail for verification, password-reset and notice emails. Startup fails outside Development when any of the four is missing (the message lists the missing names, never the values). Optional: `SMTP_PORT` (default `587`), `SMTP_SSL` (default `true`, STARTTLS).
   - Production uses a Google account: `SMTP_HOST=smtp.gmail.com`, `SMTP_PASS` is a Google App Password (2-Step Verification on), and `SMTP_FROM` must equal `SMTP_USER` because Gmail rewrites the From address.
 - `EMAIL_SENDER`: Development only. `log` writes each auth email, including its one-time link, to the console log and sends nothing (explicit opt-in). `smtp` forces SMTP. When unset, Development uses SMTP if `SMTP_HOST` is set and otherwise fails at startup, so emails are never silently dropped. `log` outside Development fails startup.
@@ -114,16 +124,18 @@ docker run --rm --env-file .env -e ADMIN_BOOTSTRAP_EMAIL -e ADMIN_BOOTSTRAP_PASS
 ## Docker
 
 ```bash
-docker build -t auth .
+GITHUB_TOKEN=<token with read:packages> docker build --secret id=nuget_token,env=GITHUB_TOKEN -t auth .
 docker run -p 5001:5001 --env-file .env auth
 ```
+
+The Dockerfile restores `JobPlatform.SharedKernel` from GitHub Packages through the BuildKit secret `nuget_token`; a plain `docker build` without it fails with `NU1301` (`401`). In `job-platform-infra`, `docker-compose.yml` supplies the secret from the `GITHUB_TOKEN` environment variable.
 
 `Dockerfile` `sdk:10.0` `aspnet:10.0` `USER app` `HEALTHCHECK curl /health`.
 
 ## Troubleshooting
 
 - `dotnet: command not found` → `mise trust` not run
-- `NU1301 local source` → `mise run pack-shared`
+- `NU1301 401` from GitHub Packages → set `GITHUB_TOKEN` with `read:packages` (the package is public, but the feed still requires authentication)
 - `password authentication failed` → `cd ../job-platform-infra && docker compose up -d && docker compose ps`
 - `mise run verify` not 14 → re-run `mise run sync-env`
 
