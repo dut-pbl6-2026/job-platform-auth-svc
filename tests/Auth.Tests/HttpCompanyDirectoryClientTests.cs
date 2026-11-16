@@ -88,6 +88,20 @@ public class HttpCompanyDirectoryClientTests
     }
 
     [Fact]
+    public async Task CreateCompany_201WithoutCompanyId_IsUnavailable_NotAnEmptyLink()
+    {
+        // job-svc once answered `{ "id": ... }`: binding that into CreatedCompanyBody left Guid.Empty and
+        // linked the founder to no company. A 2xx without a usable id must fail the verification instead.
+        var handler = new StubHandler(_ => Json(HttpStatusCode.Created, """{"id":"22222222-2222-2222-2222-222222222222"}"""));
+        var handlerEmpty = new StubHandler(_ => Json(HttpStatusCode.Created, """{"companyId":"00000000-0000-0000-0000-000000000000"}"""));
+
+        await Assert.ThrowsAsync<CompanyDirectoryUnavailableException>(() =>
+            Client(handler).CreateCompanyAsync("Acme Labs", null, Guid.NewGuid(), "acme.example"));
+        await Assert.ThrowsAsync<CompanyDirectoryUnavailableException>(() =>
+            Client(handlerEmpty).CreateCompanyAsync("Acme Labs", null, Guid.NewGuid(), "acme.example"));
+    }
+
+    [Fact]
     public async Task CreateCompany_500_IsUnavailable_NotAlreadyExists()
     {
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
