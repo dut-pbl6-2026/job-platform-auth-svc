@@ -19,7 +19,7 @@ public class JwtTokenService
         _keys = keys;
     }
 
-    public string GenerateAccessToken(Guid userId, string email, string role, Guid? companyId = null)
+    public string GenerateAccessToken(Guid userId, string email, string role, Guid? companyId = null, string? fullName = null)
     {
         var creds = new SigningCredentials(_keys.Signing, SecurityAlgorithms.RsaSha256);
         var claimsList = new List<Claim>
@@ -33,6 +33,9 @@ public class JwtTokenService
         };
         if (companyId.HasValue)
             claimsList.Add(new Claim("company_id", companyId.Value.ToString()));
+        // Display name for downstream services (email greeting, interview organiser). Not an email address.
+        if (!string.IsNullOrWhiteSpace(fullName))
+            claimsList.Add(new Claim("full_name", fullName));
         var claims = claimsList.ToArray();
         var token = new JwtSecurityToken(
             issuer: _opt.Issuer,

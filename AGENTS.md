@@ -104,3 +104,9 @@ mise run run  # http://localhost:5001/health → {"status":"ok"}
 ```
 
 `feature/* → main` (PR template: Changes/How to verify/Checklist bump the `JobPlatform.SharedKernel` `PackageReference` if the shared release changed).
+
+## Token claim for downstream display names
+
+The access token carries `full_name` (in addition to `sub`, `email`, `role`, `company_id`). app-svc
+snapshots it on an application and uses it as the interview organiser; it is display data, never an
+authorisation input.

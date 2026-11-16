@@ -259,7 +259,7 @@ public class AuthService : IAuthService
             return Result<AuthResponse>.Failure("Account inactive");
         }
 
-        var accessToken = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId);
+        var accessToken = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId, user.FullName);
         var refreshToken = _jwt.GenerateRefreshToken();
         var tokenHash = _jwt.HashToken(refreshToken);
         var expiresAt = DateTime.UtcNow.AddDays(request.RememberMe ? 30 : 7);
@@ -335,7 +335,7 @@ public class AuthService : IAuthService
             return Result<AuthResponse>.Failure("Invalid refresh token");
         }
 
-        var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId);
+        var newAccess = _jwt.GenerateAccessToken(user.Id, user.Email, user.Role, user.CompanyId, user.FullName);
         _logger.LogInformation("AUDIT AuthEvent=RefreshSuccess Family={Family} UserId={UserId}", stored.TokenFamily, user.Id);
         var dto = new UserDto(user.Id, user.Email, user.FullName, user.Role, user.CompanyId);
         return Result<AuthResponse>.Success(new AuthResponse(newAccess, newRefresh, dto));
