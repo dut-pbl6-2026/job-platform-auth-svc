@@ -99,19 +99,20 @@ public sealed class StartupConfigurationTests
     }
 
     [Fact]
-    public void Startup_Fails_InProduction_WhenKnownNetworksMissing()
+    public void Startup_Fails_InProduction_WhenTrustedProxiesMissing()
     {
         using var factory = new ConfigFactory("Production", new Dictionary<string, string?>
         {
             ["Jwt:SigningKeyPem"] = TestSigningKeys.PrivateKeyPemBase64,
             ["DATABASE_URL_AUTH"] = "Host=localhost;Database=unused",
             ["WEB_URL"] = "https://app.example.test",
-            ["ForwardedHeaders:KnownNetworks"] = "",
+            ["TRUSTED_PROXIES"] = "",
         });
 
         var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
 
-        Assert.Contains("ForwardedHeaders:KnownNetworks must list the gateway's network", ex.ToString());
+        Assert.Contains("TRUSTED_PROXIES", ex.ToString());
+        Assert.Contains("must list the gateway's network", ex.ToString());
     }
 
     [Theory]

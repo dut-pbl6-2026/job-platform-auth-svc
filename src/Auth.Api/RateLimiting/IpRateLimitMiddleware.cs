@@ -1,4 +1,5 @@
 using System.Globalization;
+using Auth.Api.Networking;
 using Microsoft.AspNetCore.Http;
 
 namespace Auth.Api.RateLimiting;
@@ -6,9 +7,10 @@ namespace Auth.Api.RateLimiting;
 /// <summary>
 /// Rejects requests over the per-IP limit declared on the matched endpoint. Runs where the old
 /// <c>UseRateLimiter</c> ran, so a rejected request is not counted as a valid attempt by later
-/// middleware and never reaches model binding.
+/// middleware and never reaches model binding. The bucket key comes from <see cref="ClientIpResolver"/>:
+/// the real client behind a trusted proxy, otherwise the connection IP.
 /// </summary>
-public sealed class IpRateLimitMiddleware(RequestDelegate next, IpRateLimiter limiter)
+public sealed class IpRateLimitMiddleware(RequestDelegate next, IpRateLimiter limiter, ClientIpResolver clientIp)
 {
     public async Task InvokeAsync(HttpContext context)
     {
@@ -19,7 +21,12 @@ public sealed class IpRateLimitMiddleware(RequestDelegate next, IpRateLimiter li
             return;
         }
 
-        var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        // Runs before UseForwardedHeaders: the peer here is the actual connection, and the resolver
+        // walks X-Forwarded-For only when that peer is a trusted proxy.
+        var ip = clientIp.Resolve(
+                     context.Connection.RemoteIpAddress,
+                     context.Request.Headers["X-Forwarded-For"].ToString())
+                 ?.ToString() ?? "unknown";
         var decision = await limiter.CheckAsync(policy, ip, context.RequestAborted);
         if (decision.Allowed)
         {
